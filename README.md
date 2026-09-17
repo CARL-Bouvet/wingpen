@@ -28,6 +28,16 @@ c'est pour ça que le transport en est un. Voir `docs/PROTOCOL.md`.
 
 Jalon 1 en cours. Rien n'est publié, rien n'est distribuable.
 
+## Licence
+
+AGPL-3.0 — voir [`LICENSE`](LICENSE).
+
+Le code est ouvert parce que c'est la seule façon de rendre vérifiable ce que Wingpen promet : le
+contenu des pages ne quitte pas la machine. Plusieurs extensions concurrentes ont promis la même
+chose par écrit et ont été démenties par analyse de trafic ; la différence tient à ce qu'on peut
+lire le code plutôt qu'à ce qu'on affirme. Chaque ligne qui touche aux données de l'utilisateur est
+dans ce dépôt.
+
 ## Démarrer
 
 ```sh

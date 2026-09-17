@@ -9,14 +9,22 @@
 #   ./scripts/smoke.sh            # contre le vrai broker (doit tourner sur 8787)
 #   ./scripts/smoke.sh --stub     # contre un stub qui journalise tout
 #
-# Laisse Chrome en vie à la fin : inspecter avec `bun scripts/cdp-eval.js '<expr>'`.
+# Variables :
+#   WINGPEN_CHROME    binaire du navigateur (défaut : Chrome for Testing 154)
+#   WINGPEN_HEADLESS  0 pour une vraie fenêtre. Indispensable pour observer une
+#                     demande de permission : en headless elle ne peut pas
+#                     s'afficher, donc son absence ne prouve rien.
+#   WINGPEN_PROFILE   répertoire de profil (défaut : un profil dédié par navigateur)
+#
+# Laisse le navigateur en vie à la fin : inspecter avec `bun scripts/cdp-eval.js '<expr>'`.
 # Arrêter avec ./scripts/smoke.sh --stop
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 CHROME="${WINGPEN_CHROME:-$HOME/.cache/ms-playwright/chromium-1244/chrome-linux64/chrome}"
-PROFILE="$HOME/.local/share/wingpen/chrome-profile"
+HEADLESS="${WINGPEN_HEADLESS:-1}"
+PROFILE="${WINGPEN_PROFILE:-$HOME/.local/share/wingpen/profile-$(basename "$CHROME")}"
 EXT="$PWD/extension"
 PORT=9222
 STUB_LOG=/tmp/wingpen-stub.log
@@ -56,13 +64,14 @@ STUB
 fi
 
 mkdir -p "$PROFILE"
+if [ "$HEADLESS" = "1" ]; then MODE=(--headless=new); else MODE=(); fi
 if ! pgrep -f "user-data-dir=$PROFILE" > /dev/null; then
-  setsid --fork "$CHROME" --headless=new --no-first-run --no-default-browser-check \
+  setsid --fork "$CHROME" "${MODE[@]}" --no-first-run --no-default-browser-check \
     --user-data-dir="$PROFILE" \
     --disable-extensions-except="$EXT" --load-extension="$EXT" \
     --remote-debugging-port=$PORT about:blank > /tmp/wingpen-chrome.log 2>&1 < /dev/null
   sleep 6
-  echo "Chrome lancé (profil dédié, extension chargée)."
+  echo "$(basename "$CHROME") lancé (headless=$HEADLESS, profil $PROFILE, extension chargée)."
 fi
 
 # Le jeton vit en chrome.storage.session : il disparaît à chaque redémarrage du

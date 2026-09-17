@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wingpen</title>
+  <link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-name">Wingpen</span>
+      <span id="status" class="status status--unknown">
+        <span class="status-dot"></span>
+        <span class="status-label">…</span>
+      </span>
+    </div>
+    <button id="openOptions" class="icon-button" type="button" title="Réglages">⚙</button>
+  </header>
+
+  <section class="toolbar">
+    <button id="summarizePage" class="toolbar-button" type="button">Résumer cette page</button>
+    <button id="summarizeVideo" class="toolbar-button" type="button">Résumer cette vidéo</button>
+    <select id="promptSelect" class="prompt-select">
+      <option value="">Bibliothèque de prompts…</option>
+    </select>
+    <button id="savePrompt" class="icon-button" type="button" title="Enregistrer le texte saisi comme prompt">💾</button>
+  </section>
+
+  <main id="messages" class="messages" aria-live="polite"></main>
+
+  <footer class="composer">
+    <textarea id="input" class="composer-input" placeholder="Écrivez à Wingpen…" rows="2"></textarea>
+    <div class="composer-actions">
+      <button id="cancel" class="composer-button composer-button--ghost" type="button" hidden>Annuler</button>
+      <button id="send" class="composer-button" type="button">Envoyer</button>
+    </div>
+  </footer>
+
+  <script src="panel.js" type="module"></script>
+</body>
+</html>

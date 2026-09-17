@@ -1,0 +1,39 @@
+# Wingpen
+
+Un compagnon dans le navigateur : un panneau latéral qui répond, résume la page ou la vidéo
+qu'on regarde, et retravaille le texte qu'on sélectionne.
+
+Deux morceaux :
+
+- **`extension/`** — l'extension Chromium (Manifest V3). Elle n'appelle jamais un fournisseur
+  d'IA directement, et ne détient aucun identifiant.
+- **`broker/`** — un petit serveur qui tourne sur la machine de l'utilisateur, écoute sur
+  `127.0.0.1` seulement, détient la configuration et parle au modèle. L'extension lui parle en
+  WebSocket.
+
+Le contrat entre les deux est figé dans [`docs/PROTOCOL.md`](docs/PROTOCOL.md). Les décisions de
+conception et ce qui les motive sont dans [`docs/DECISIONS.md`](docs/DECISIONS.md).
+
+## Pourquoi un broker
+
+Le stockage d'une extension n'est pas chiffré sur le disque, et une extension est exposée à
+toutes les pages que l'utilisateur visite. Mettre les identifiants ailleurs — dans un processus
+local que le navigateur ne peut qu'interroger — retire le secret de la zone de souffle.
+
+Le prix à payer est une contrainte récente de Chrome : joindre `127.0.0.1` depuis une page
+déclenche une demande de permission (Local Network Access). Les WebSockets y échappent encore ;
+c'est pour ça que le transport en est un. Voir `docs/PROTOCOL.md`.
+
+## État
+
+Jalon 1 en cours. Rien n'est publié, rien n'est distribuable.
+
+## Démarrer
+
+```sh
+cd broker && bun install && bun run start     # écoute sur 127.0.0.1:8787
+```
+
+Puis charger `extension/` dans Chrome via `chrome://extensions` → « Charger l'extension non
+empaquetée ». Le broker écrit un jeton de pairage dans `~/.local/share/wingpen/pairing.txt` au
+premier démarrage : le coller dans les options de l'extension.

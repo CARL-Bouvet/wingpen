@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Wingpen",
+  "version": "0.1.0",
+  "description": "Assistant IA local : résumer une page ou une vidéo, discuter avec un modèle, agir sur une sélection, via un broker qui tourne sur votre machine.",
+  "permissions": ["sidePanel", "activeTab", "storage", "scripting", "alarms"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "panel/panel.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_title": "Wingpen"
+  }
+}

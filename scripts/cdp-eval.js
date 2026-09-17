@@ -33,7 +33,9 @@ const result = await new Promise((resolve, reject) => {
       JSON.stringify({
         id: 1,
         method: "Runtime.evaluate",
-        params: { expression, awaitPromise: true, returnByValue: true },
+        // userGesture: certaines API d'extension (chrome.sidePanel.open) exigent
+        // un geste utilisateur et refusent tout appel programmatique sans lui.
+        params: { expression, awaitPromise: true, returnByValue: true, userGesture: true },
       }),
     );
   };

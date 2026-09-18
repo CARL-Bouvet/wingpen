@@ -125,6 +125,12 @@ function handleBrokerMessage(message) {
 }
 
 function applyStatus(state) {
+  // A dropped connection must not leave the panel permanently locked: any
+  // in-flight request will never get its "done"/"error" reply now.
+  if ((state === "disconnected" || state === "no-token") && activeRequestId) {
+    setStreamingUi(false);
+  }
+
   els.status.className = `status status--${state}`;
   const labels = {
     connected: "Connecté",
@@ -168,6 +174,8 @@ function cancelActive() {
 
 function setStreamingUi(streaming) {
   els.send.disabled = streaming;
+  els.summarizePage.disabled = streaming;
+  els.summarizeVideo.disabled = streaming;
   els.cancel.hidden = !streaming;
   if (!streaming) activeRequestId = null;
 }
@@ -175,6 +183,10 @@ function setStreamingUi(streaming) {
 // --- Summarize ------------------------------------------------------------
 
 async function summarize(expectedKind) {
+  if (activeRequestId) return;
+  activeRequestId = "pending"; // in-flight guard until the real id is known below; also drives the disabled buttons
+  setStreamingUi(true);
+
   let tabId;
   let context;
   try {
@@ -182,11 +194,13 @@ async function summarize(expectedKind) {
     context = await extractFromTab(tabId);
   } catch (err) {
     addMessage({ id: newId(), role: "system", text: `⚠ Impossible de lire la page : ${err.message}` });
+    setStreamingUi(false);
     return;
   }
 
   if (expectedKind === "youtube" && context.kind !== "youtube") {
     addMessage({ id: newId(), role: "system", text: "⚠ Cette page n'est pas une vidéo YouTube." });
+    setStreamingUi(false);
     return;
   }
 
@@ -210,6 +224,7 @@ async function summarize(expectedKind) {
         "La transcription n'a pas pu être lue. Sous la vidéo : « … » → « Afficher la transcription », " +
         "puis relancez le résumé. Si le bouton est absent, la vidéo n'a pas de sous-titres.",
     });
+    setStreamingUi(false);
     return;
   }
 
@@ -219,6 +234,7 @@ async function summarize(expectedKind) {
       role: "system",
       text: "⚠ Rien de lisible n'a été trouvé sur cette page. Contenu chargé après coup, ou réservé aux abonnés ?",
     });
+    setStreamingUi(false);
     return;
   }
 
@@ -303,7 +319,8 @@ function renderPromptOptions() {
   els.promptSelect.innerHTML = "";
   const placeholder = document.createElement("option");
   placeholder.value = "";
-  placeholder.textContent = "Bibliothèque de prompts…";
+  placeholder.textContent =
+    prompts.length === 0 ? "Bibliothèque de prompts vide" : "Bibliothèque de prompts…";
   els.promptSelect.appendChild(placeholder);
 
   for (const prompt of prompts) {

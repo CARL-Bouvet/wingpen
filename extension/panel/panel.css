@@ -91,6 +91,12 @@ body {
   background: #f2f2f5;
 }
 
+.toolbar-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: #fff;
+}
+
 .prompt-select {
   flex: 1;
   min-width: 120px;

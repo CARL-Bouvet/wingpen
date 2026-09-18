@@ -6,7 +6,6 @@ bun.lockb
 JOURNAL.md
 notes/
 .screenshots/
-extension/icons/*.png
 .bun-cache/
 .bun-tmp/
 .claude/

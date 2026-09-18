@@ -14,6 +14,20 @@ function promptsPath(dirs: PromptsDirs): string {
   return join(dirs.dataDir, "prompts.json");
 }
 
+/**
+ * Starter prompts shown when prompts.json does not exist yet. Returned by
+ * listPrompts() but never written to disk on read — they only get persisted
+ * if the user saves something (see savePrompt below), so an empty library
+ * never silently becomes a file the user didn't ask for.
+ */
+export const DEFAULT_PROMPTS: PromptEntry[] = [
+  { name: "Traduire en français", body: "Traduis le texte suivant en français, sans commentaire ni reformulation :" },
+  { name: "Expliquer simplement", body: "Explique ce texte simplement, comme à quelqu'un qui découvre le sujet :" },
+  { name: "Extraire les points clés", body: "Extrais les points clés de ce texte sous forme de liste à puces :" },
+  { name: "Rédiger une réponse", body: "Rédige une réponse courte et polie à ce message :" },
+  { name: "Résumer en 3 phrases", body: "Résume ce texte en 3 phrases maximum :" },
+];
+
 function isPromptEntry(v: unknown): v is PromptEntry {
   return (
     typeof v === "object" &&
@@ -49,12 +63,13 @@ function writeAll(dirs: PromptsDirs, items: PromptEntry[]): void {
 }
 
 export function listPrompts(dirs: PromptsDirs): PromptEntry[] {
+  if (!existsSync(promptsPath(dirs))) return DEFAULT_PROMPTS;
   return readAll(dirs);
 }
 
 /** Saves (creates or overwrites by name) a prompt and returns the full updated list. */
 export function savePrompt(dirs: PromptsDirs, prompt: PromptEntry): PromptEntry[] {
-  const items = readAll(dirs);
+  const items = existsSync(promptsPath(dirs)) ? readAll(dirs) : [...DEFAULT_PROMPTS];
   const idx = items.findIndex((p) => p.name === prompt.name);
   if (idx >= 0) {
     items[idx] = prompt;
@@ -65,9 +80,15 @@ export function savePrompt(dirs: PromptsDirs, prompt: PromptEntry): PromptEntry[
   return items;
 }
 
-/** Deletes a prompt by name and returns the full updated list. No-op if absent. */
+/**
+ * Deletes a prompt by name and returns the full updated list. No-op if absent.
+ *
+ * Reads through the same starting point as listPrompts: on a library that is
+ * still the untouched defaults, deleting one entry must persist the remaining
+ * four, not wipe the lot.
+ */
 export function deletePrompt(dirs: PromptsDirs, name: string): PromptEntry[] {
-  const items = readAll(dirs).filter((p) => p.name !== name);
+  const items = listPrompts(dirs).filter((p) => p.name !== name);
   writeAll(dirs, items);
   return items;
 }

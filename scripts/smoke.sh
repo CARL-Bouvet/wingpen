@@ -15,6 +15,11 @@
 #                     demande de permission : en headless elle ne peut pas
 #                     s'afficher, donc son absence ne prouve rien.
 #   WINGPEN_PROFILE   répertoire de profil (défaut : un profil dédié par navigateur)
+#   WINGPEN_DEV       1 pour charger la copie de développement (permissions
+#                     d'hôte accordées d'office, cf. scripts/dev-extension.sh).
+#                     Indispensable pour éprouver l'extraction sans clic humain.
+#                     L'identifiant d'extension diffère : à déclarer une fois
+#                     dans ~/.config/wingpen/config.json → allowedExtensionIds.
 #
 # Laisse le navigateur en vie à la fin : inspecter avec `bun scripts/cdp-eval.js '<expr>'`.
 # Arrêter avec ./scripts/smoke.sh --stop
@@ -25,8 +30,13 @@ cd "$(dirname "$0")/.."
 CHROME="${WINGPEN_CHROME:-$HOME/.cache/ms-playwright/chromium-1244/chrome-linux64/chrome}"
 HEADLESS="${WINGPEN_HEADLESS:-1}"
 PROFILE="${WINGPEN_PROFILE:-$HOME/.local/share/wingpen/profile-$(basename "$CHROME")}"
-EXT="$PWD/extension"
-PORT=9222
+if [ "${WINGPEN_DEV:-0}" = "1" ]; then
+  ./scripts/dev-extension.sh > /dev/null
+  EXT="${WINGPEN_DEV_EXT:-/tmp/wingpen-ext-dev}"
+else
+  EXT="$PWD/extension"
+fi
+PORT="${WINGPEN_PORT:-9222}"
 STUB_LOG=/tmp/wingpen-stub.log
 
 stop() {
@@ -76,7 +86,9 @@ fi
 
 # Le jeton vit en chrome.storage.session : il disparaît à chaque redémarrage du
 # navigateur, c'est voulu. On le resème à chaque passage.
-bun scripts/cdp-eval.js "chrome.storage.session.set({pairingToken:'${WINGPEN_TOKEN:-smoke-token}'}).then(()=>'token semé')"
+bun scripts/cdp-eval.js "chrome.storage.session.set({pairingToken:'${WINGPEN_TOKEN:-smoke-token}'}).then(()=>'token semé')" "$PORT"
+echo "Identifiant de l'extension chargée :"
+bun scripts/cdp-eval.js "chrome.runtime.id" "$PORT"
 
 echo "Attente de l'alarme de reconnexion (jusqu'à 35 s)…"
 sleep 35

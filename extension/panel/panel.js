@@ -188,6 +188,30 @@ async function summarize(expectedKind) {
     return;
   }
 
+  // YouTube loads its transcript lazily, and Wingpen does not click it open —
+  // it accompanies a gesture, it never manufactures one. Without the
+  // transcript there is nothing to summarise but the description and the
+  // comments, which would produce a plausible and wrong answer. Ask instead.
+  if (context.needsTranscript) {
+    addMessage({
+      id: newId(),
+      role: "system",
+      text:
+        "La transcription n'est pas ouverte. Sous la vidéo : « Plus » → « Afficher la transcription », " +
+        "puis relancez le résumé. Sans elle, il n'y aurait que la description et les commentaires à lire.",
+    });
+    return;
+  }
+
+  if (!context.text || context.text.trim().length < 40) {
+    addMessage({
+      id: newId(),
+      role: "system",
+      text: "⚠ Rien de lisible n'a été trouvé sur cette page. Contenu chargé après coup, ou réservé aux abonnés ?",
+    });
+    return;
+  }
+
   const id = newId();
   const label = expectedKind === "youtube" ? "Résumer cette vidéo" : "Résumer cette page";
   addMessage({ id: `${id}-u`, role: "user", text: `${label} : ${context.title || context.url}` });

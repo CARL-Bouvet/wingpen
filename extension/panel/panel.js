@@ -175,9 +175,11 @@ function setStreamingUi(streaming) {
 // --- Summarize ------------------------------------------------------------
 
 async function summarize(expectedKind) {
+  let tabId;
   let context;
   try {
-    context = await extractFromActiveTab();
+    tabId = await activeTabId();
+    context = await extractFromTab(tabId);
   } catch (err) {
     addMessage({ id: newId(), role: "system", text: `⚠ Impossible de lire la page : ${err.message}` });
     return;
@@ -188,17 +190,25 @@ async function summarize(expectedKind) {
     return;
   }
 
-  // YouTube loads its transcript lazily, and Wingpen does not click it open —
-  // it accompanies a gesture, it never manufactures one. Without the
-  // transcript there is nothing to summarise but the description and the
-  // comments, which would produce a plausible and wrong answer. Ask instead.
+  // YouTube charge sa transcription en différé. On ouvre le panneau une fois —
+  // exception nommée à la règle du geste — puis on relit. Sans transcription il
+  // n'y aurait que la description et les commentaires à résumer, ce qui
+  // produirait une réponse plausible et fausse.
   if (context.needsTranscript) {
+    const opened = await openYouTubeTranscript(tabId).catch(() => false);
+    if (opened) context = await extractFromTab(tabId).catch(() => context);
+  }
+
+  if (context.needsTranscript) {
+    // Message factuel, sans qualification juridique : soit YouTube a changé sa
+    // page, soit la vidéo n'a pas de sous-titres. C'est aussi le signal de
+    // rupture prévu par T19.
     addMessage({
       id: newId(),
       role: "system",
       text:
-        "La transcription n'est pas ouverte. Sous la vidéo : « Plus » → « Afficher la transcription », " +
-        "puis relancez le résumé. Sans elle, il n'y aurait que la description et les commentaires à lire.",
+        "La transcription n'a pas pu être lue. Sous la vidéo : « … » → « Afficher la transcription », " +
+        "puis relancez le résumé. Si le bouton est absent, la vidéo n'a pas de sous-titres.",
     });
     return;
   }
@@ -227,18 +237,57 @@ async function summarize(expectedKind) {
   });
 }
 
-async function extractFromActiveTab() {
+async function activeTabId() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || !tab.id) throw new Error("aucun onglet actif");
+  return tab.id;
+}
 
+async function extractFromTab(tabId) {
   const results = await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
+    target: { tabId },
     files: ["content/extract.js"],
   });
 
   const result = results?.[0]?.result;
   if (!result || typeof result !== "object") throw new Error("extraction vide");
   return result;
+}
+
+// Exception nommée à la règle du geste (DECISIONS.md). Un seul clic, sur le
+// bouton que YouTube affiche déjà, uniquement en réponse au clic de
+// l'utilisateur sur « Résumer cette vidéo », sur l'onglet qu'il regarde. Jamais
+// au chargement, jamais en boucle, jamais sur une autre vidéo. Ce n'est pas un
+// parcours automatisé : c'est le geste de l'utilisateur, outillé.
+async function openYouTubeTranscript(tabId) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: async () => {
+      const button = [...document.querySelectorAll("button")].find((el) =>
+        /afficher la transcription|show transcript/i.test(
+          el.getAttribute("aria-label") || el.innerText || "",
+        ),
+      );
+      if (!button) return false;
+
+      button.click();
+
+      // Le panneau se remplit en différé ; mesuré entre 1 et 10 s.
+      const deadline = Date.now() + 15000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        if (
+          document.querySelector(
+            "transcript-segment-view-model, ytd-transcript-segment-renderer",
+          )
+        ) {
+          return true;
+        }
+      }
+      return false;
+    },
+  });
+  return results?.[0]?.result === true;
 }
 
 // --- Prompt library ---------------------------------------------------

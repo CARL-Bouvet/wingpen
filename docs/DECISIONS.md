@@ -79,6 +79,37 @@ ligne, et la franchir les fait perdre tous les trois d'un coup.
 Interdit : suivi de prix en arrière-plan, veille automatique, crawl multi-pages, publication
 programmée, toute boucle sans geste. Autorisé : tout ce qui part d'un clic sur la page ouverte.
 
+### L'exception nommée (18/09) — ouvrir la transcription YouTube
+
+Un seul clic, sur le bouton « Afficher la transcription » que YouTube affiche déjà, **uniquement**
+en réponse au clic de l'utilisateur sur « Résumer cette vidéo », sur l'onglet qu'il regarde. Jamais
+au chargement, jamais en boucle, jamais sur une autre vidéo que celle affichée. Code isolé dans
+`panel.js:openYouTubeTranscript`, séparé de l'extraction pour rester lisible par un examinateur de
+boutique.
+
+Motif : ce que visent les trois régimes, c'est le **volume et l'autonomie** — un moissonneur. Une
+interaction unique, sur instruction directe et simultanée d'un utilisateur connecté, est son acte à
+lui, outillé. C'est l'axe de hiQ v. LinkedIn et de Meta v. Bright Data : ce qui a fait basculer les
+décisions, c'est l'accès massif derrière un login, jamais une interaction isolée avec une interface.
+Une lecture stricte interdirait aussi de faire défiler une page pour charger du contenu différé, ce
+qui rendrait l'extension inutilisable.
+
+Cette exception est **nommée et bornée** : elle vaut pour ce bouton, pas comme précédent. Toute
+extension du principe repasse par une décision explicite.
+
+⚠️ **Ce qui a été écarté au passage** : faire dire au produit « clique à ma place, je n'ai pas le
+droit de le faire ». Cette phrase n'aurait protégé de rien et aurait tout aggravé — un aveu écrit,
+livré à chaque client, que l'éditeur estime l'action interdite, doublé d'une instruction de la
+commettre. C'est la définition de la **facilitation** que vise la politique du Chrome Web Store, et
+la preuve du savoir en cas de litige. Règle générale qui en découle : **ne jamais écrire dans le
+produit qu'on estime quelque chose illégal.** Le cadre juridique s'énonce une fois, en termes
+factuels et neutres, dans les CGU et la fiche de boutique. Les messages d'interface restent
+factuels : ce qui s'est passé, ce que l'utilisateur peut faire — jamais une qualification de droit.
+
+Corollaire de risque : l'exposition réelle n'est pas un procès — aucune plateforme ne poursuit un
+développeur solo pour un clic — mais un **retrait du Chrome Web Store**, administratif, sans recours
+pratique, immédiat. On optimise pour la lecture d'un examinateur, pas pour un tribunal.
+
 **La contrainte vit dans le code, pas dans l'interface.** L'idée d'afficher dans chaque réponse ce
 que Wingpen a le droit de faire a été examinée et écartée : le CWS juge le code et non l'interface
 (la responsabilité ne se transfère pas par mention légale) ; l'encart répété reproduit la plainte

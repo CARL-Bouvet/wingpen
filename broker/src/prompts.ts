@@ -1,8 +1,9 @@
 // Prompt library persisted at ~/.local/share/wingpen/prompts.json.
 // Base directory is always passed in as a parameter so tests can point at a temp dir.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import type { PromptEntry } from "./protocol.ts";
 
 export interface PromptsDirs {
@@ -55,11 +56,29 @@ function readAll(dirs: PromptsDirs): PromptEntry[] {
   }
 }
 
-function writeAll(dirs: PromptsDirs, items: PromptEntry[]): void {
+/**
+ * Writes atomically: write to a sibling temp file, then rename over the
+ * target. Rename is atomic on POSIX, so a reader (or a crash mid-write) never
+ * observes a partially-written prompts.json. `writeFileSync`'s mode is kept
+ * through the rename, so the 0600 permission survives.
+ */
+function writeAllAtomic(dirs: PromptsDirs, items: PromptEntry[]): void {
   if (!existsSync(dirs.dataDir)) {
     mkdirSync(dirs.dataDir, { recursive: true });
   }
-  writeFileSync(promptsPath(dirs), JSON.stringify(items, null, 2) + "\n", { mode: 0o600 });
+  const target = promptsPath(dirs);
+  const tmp = join(dirs.dataDir, `.prompts.json.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
+  try {
+    writeFileSync(tmp, JSON.stringify(items, null, 2) + "\n", { mode: 0o600 });
+    renameSync(tmp, target);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // tmp was never created, or already gone — fine either way.
+    }
+    throw err;
+  }
 }
 
 export function listPrompts(dirs: PromptsDirs): PromptEntry[] {
@@ -67,17 +86,41 @@ export function listPrompts(dirs: PromptsDirs): PromptEntry[] {
   return readAll(dirs);
 }
 
+/**
+ * Per-dataDir serialization so two concurrent callers (e.g. two open panels
+ * saving/deleting at the same time) queue instead of racing a read-modify-write
+ * against each other — the atomic rename above only protects a single write
+ * from being observed half-done, not two writes from clobbering one another.
+ */
+const dirLocks = new Map<string, Promise<unknown>>();
+
+function withDirLock<T>(dataDir: string, fn: () => T): Promise<T> {
+  const prev = dirLocks.get(dataDir) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  // Track a settled-either-way promise so a prior rejection never wedges the queue.
+  dirLocks.set(
+    dataDir,
+    next.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return next;
+}
+
 /** Saves (creates or overwrites by name) a prompt and returns the full updated list. */
-export function savePrompt(dirs: PromptsDirs, prompt: PromptEntry): PromptEntry[] {
-  const items = existsSync(promptsPath(dirs)) ? readAll(dirs) : [...DEFAULT_PROMPTS];
-  const idx = items.findIndex((p) => p.name === prompt.name);
-  if (idx >= 0) {
-    items[idx] = prompt;
-  } else {
-    items.push(prompt);
-  }
-  writeAll(dirs, items);
-  return items;
+export function savePrompt(dirs: PromptsDirs, prompt: PromptEntry): Promise<PromptEntry[]> {
+  return withDirLock(dirs.dataDir, () => {
+    const items = existsSync(promptsPath(dirs)) ? readAll(dirs) : [...DEFAULT_PROMPTS];
+    const idx = items.findIndex((p) => p.name === prompt.name);
+    if (idx >= 0) {
+      items[idx] = prompt;
+    } else {
+      items.push(prompt);
+    }
+    writeAllAtomic(dirs, items);
+    return items;
+  });
 }
 
 /**
@@ -87,8 +130,10 @@ export function savePrompt(dirs: PromptsDirs, prompt: PromptEntry): PromptEntry[
  * still the untouched defaults, deleting one entry must persist the remaining
  * four, not wipe the lot.
  */
-export function deletePrompt(dirs: PromptsDirs, name: string): PromptEntry[] {
-  const items = listPrompts(dirs).filter((p) => p.name !== name);
-  writeAll(dirs, items);
-  return items;
+export function deletePrompt(dirs: PromptsDirs, name: string): Promise<PromptEntry[]> {
+  return withDirLock(dirs.dataDir, () => {
+    const items = listPrompts(dirs).filter((p) => p.name !== name);
+    writeAllAtomic(dirs, items);
+    return items;
+  });
 }

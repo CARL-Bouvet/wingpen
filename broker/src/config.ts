@@ -18,7 +18,15 @@ export interface Dirs {
   dataDir: string;
 }
 
-export const DEFAULT_CONFIG: WingpenConfig = { port: 8787, allowedExtensionIds: [] };
+// The pinned extension ID, derived from extension/manifest.json's "key" field
+// (RSA 2048 public key). See docs/PROTOCOL.md "Pairing" for the derivation.
+// Private key: extension-key.pem (gitignored, never committed).
+const PINNED_EXTENSION_ID = "hehlgipomfminodhahcjbencblepjhah";
+
+export const DEFAULT_CONFIG: WingpenConfig = {
+  port: 8787,
+  allowedExtensionIds: [PINNED_EXTENSION_ID],
+};
 
 /** Real-world default directories. Never called from library logic directly — only from server.ts entrypoint. */
 export function defaultDirs(): Dirs {
@@ -42,8 +50,11 @@ export function loadConfig(dirs: Dirs): WingpenConfig {
     writeFileSync(configPath, JSON.stringify(DEFAULT_CONFIG, null, 2) + "\n", {
       mode: 0o600,
     });
-    return { ...DEFAULT_CONFIG, allowedExtensionIds: [] };
+    return { ...DEFAULT_CONFIG, allowedExtensionIds: [...DEFAULT_CONFIG.allowedExtensionIds] };
   }
+  // Same reasoning as loadOrCreatePairingSecret's "already exists" branch: a
+  // config file surviving a backup/restore could have lost its 0600 mode.
+  chmodSync(configPath, 0o600);
   const raw = readFileSync(configPath, "utf8");
   let parsed: unknown;
   try {
@@ -70,6 +81,10 @@ export function loadOrCreatePairingSecret(dirs: Dirs): string {
     mkdirSync(dirs.dataDir, { recursive: true });
   }
   if (existsSync(secretPath)) {
+    // Re-assert 0600 even on the "already exists" path: a file restored from a
+    // backup, copied by a naive sync tool, or left over from an older broker
+    // version could have laxer permissions than the mode we set at creation.
+    chmodSync(secretPath, 0o600);
     return readFileSync(secretPath, "utf8").trim();
   }
   const secret = randomBytes(16).toString("hex"); // 32 hex chars

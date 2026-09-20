@@ -10,7 +10,28 @@ const WS_URL = "ws://127.0.0.1:8787/ws";
 const PROTOCOL_VERSION = 1;
 const RECONNECT_ALARM = "wingpen-reconnect";
 const MAX_BACKOFF_MS = 30000;
-const HELLO_TIMEOUT_MS = 5000;
+// Must stay below the broker's own handshake timeout (3000ms, server.ts:193-195)
+// so the client — not the server closing the socket first — is the one to
+// report "handshake timeout" as a distinct state.
+const HELLO_TIMEOUT_MS = 2500;
+
+// Key for the "act on selection" stash — see the context menu block below.
+// chrome.storage.SESSION only: the stashed text is the user's private
+// selection, so it must never touch chrome.storage.local (unencrypted disk,
+// CLAUDE.md rule #1).
+const PENDING_ACTION_KEY = "wingpen:pendingAction";
+
+// Wingpen's four selection actions (docs/PROTOCOL.md, message "act"). Menu
+// item id -> the broker action it maps to, the French label shown both in
+// the context menu and later as the panel's own user-bubble label, and any
+// fixed params the action needs (translate defaults to French, matching the
+// rest of the UI).
+const CONTEXT_MENU_ACTIONS = {
+  "wingpen-rewrite": { action: "rewrite", label: "Reformuler" },
+  "wingpen-shorten": { action: "shorten", label: "Raccourcir" },
+  "wingpen-explain": { action: "explain", label: "Expliquer" },
+  "wingpen-translate": { action: "translate", label: "Traduire", params: { targetLang: "fr" } },
+};
 
 let ws = null;
 let wsState = "disconnected"; // disconnected | connecting | handshaking | connected
@@ -21,6 +42,48 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   chrome.alarms.create(RECONNECT_ALARM, { periodInMinutes: 0.5 });
   connectIfNeeded();
+  setupContextMenus();
+});
+
+function setupContextMenus() {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({ id: "wingpen", title: "Wingpen", contexts: ["selection"] });
+    for (const [id, entry] of Object.entries(CONTEXT_MENU_ACTIONS)) {
+      chrome.contextMenus.create({ id, parentId: "wingpen", title: entry.label, contexts: ["selection"] });
+    }
+  });
+}
+
+// A right-click on a text selection, followed by picking one of our menu
+// items, IS a real user gesture — the same kind a toolbar-icon click is —
+// which is why chrome.sidePanel.open() is allowed to run here (it throws
+// outside of a genuine gesture). The panel, however, may not exist yet (this
+// is often the very first interaction). So the selection text is stashed in
+// chrome.storage.session — a request "in flight" until a panel picks it up —
+// and a broadcast is sent in case a panel is already open and listening.
+// panel.js drains the stash both on its own load and on that broadcast,
+// whichever comes first, and deletes it the moment it's read: two panels
+// racing to read it is impossible in single-threaded JS, but a panel that
+// died mid-read (drainPendingAction did not run yet) leaves a "read but
+// still present" stash undamaged for the next attempt, so nothing is lost
+// and a delivered action never fires twice.
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  const entry = CONTEXT_MENU_ACTIONS[info.menuItemId];
+  if (!entry || !info.selectionText || !tab?.windowId) return;
+
+  await chrome.sidePanel.open({ windowId: tab.windowId }).catch(() => {});
+
+  await chrome.storage.session.set({
+    [PENDING_ACTION_KEY]: {
+      action: entry.action,
+      label: entry.label,
+      params: entry.params,
+      selectionText: info.selectionText,
+      url: tab.url,
+      title: tab.title,
+    },
+  });
+  broadcast({ type: "wingpen:pending-action" });
 });
 
 chrome.runtime.onStartup.addListener(() => {
@@ -90,6 +153,7 @@ async function connectIfNeeded() {
     ws.send(JSON.stringify({ type: "hello", secret: pairingToken, v: PROTOCOL_VERSION }));
     helloTimeoutId = setTimeout(() => {
       if (wsState !== "connected") {
+        setState("handshake-timeout");
         ws?.close();
       }
     }, HELLO_TIMEOUT_MS);
@@ -107,8 +171,10 @@ async function connectIfNeeded() {
     scheduleReconnect();
   });
 
-  ws.addEventListener("error", () => {
-    // The close event follows; nothing to do here besides letting it fire.
+  ws.addEventListener("error", (event) => {
+    // The close event follows; nothing actionable here besides letting it fire,
+    // but log it so a case where that assumption breaks isn't silently invisible.
+    console.warn("wingpen: WebSocket error", { state: wsState, type: event?.type, event });
   });
 }
 

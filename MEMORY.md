@@ -21,6 +21,11 @@ Réinjecté chaque session. Invariants seulement. L'état daté va dans `JOURNAL
 - Le SDK Claude Agent ne va jamais dans le binaire distribué (109 Mo + CLI) — `cli.ts` en `await import`.
 - Recettes par site : déclaratives, ancrées sur le **texte visible** et non les classes CSS, signées Ed25519, servies par CDN. Jamais de code distant (MV3 = retrait automatique). Une recette qui échoue **dégrade**, elle ne casse pas : le modèle relit une tranche plus large.
 
+## Méthode de travail (figée le 19/09)
+- **Le visuel se modélise à la main avant d'être codé.** Maquette Penpot/Figma faite par Romain, puis transmise à Claude qui la reproduit. Faire inventer un dessin détaillé à l'IA coûte cher et rend mal (quinze planches de logo l'ont prouvé).
+- **Graphiques : Plotly.js.** Jamais de SVG dessiné à la main par le modèle.
+- Dialogue admin ↔ Romain : dans le chat, jamais par le panneau APPROVALS. Ambiguïtés levées d'un bloc par un grill (une question à la fois, chacune avec une recommandation), puis le but se déroule sans checkpoint.
+
 ## Contraintes économiques figées
 - Usage perso : abonnement Claude Max via le CLI local. **Interdit de le revendre** (CGU Anthropic).
 - Distribué : **BYOK**, jamais de relais d'inférence. C'est l'argument de vente, pas une contrainte subie.

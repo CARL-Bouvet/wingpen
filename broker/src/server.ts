@@ -11,7 +11,7 @@ import {
   type WingpenConfig,
 } from "./config.ts";
 import { parseClientMessage, type ClientMessage, type ServerMessage } from "./protocol.ts";
-import { buildPrompt, streamAnswer } from "./model.ts";
+import { buildPrompt, streamAnswer, isModelUnavailableError, type BuiltPrompt } from "./model.ts";
 import { listPrompts, savePrompt, deletePrompt, type PromptsDirs } from "./prompts.ts";
 
 // Content is truncated to 40 000 chars by the content script (see PROTOCOL.md).
@@ -48,17 +48,38 @@ function send(ws: { send(data: string): unknown }, msg: ServerMessage): void {
   ws.send(JSON.stringify(msg));
 }
 
+// A local process on the machine (not the intended extension) can open a
+// WebSocket and probe the handshake. Distinct client-visible messages for
+// "wrong Origin" / "wrong secret" / "no hello in time" would let it tell
+// those apart — an oracle. Every failure gets this one generic message on the
+// wire; the real reason goes to the broker's own stderr only.
+const HANDSHAKE_FAILURE_MESSAGE = "unauthorized";
+
+function rejectHandshake(
+  ws: { close(code: number, reason: string): unknown; send(data: string): unknown },
+  reason: string,
+): void {
+  console.error(`wingpen-broker: handshake rejected — ${reason}`);
+  send(ws, { type: "error", id: "hello", code: "unauthorized", message: HANDSHAKE_FAILURE_MESSAGE });
+  ws.close(4401, HANDSHAKE_FAILURE_MESSAGE);
+}
+
+// Per-connection cap on simultaneously in-flight model streams. Without it, an
+// authenticated client sending N chat/summarize/act messages back to back
+// spawns N `claude` subprocesses with no limit. See docs/PROTOCOL.md "Limites".
+export const MAX_CONCURRENT_STREAMS = 3;
+
 async function runStream(
   ws: { send(data: string): unknown },
   active: Map<string, AbortController>,
   id: string,
-  prompt: string,
+  built: BuiltPrompt,
 ): Promise<void> {
   const controller = new AbortController();
   active.set(id, controller);
   try {
     let usage = { inputTokens: 0, outputTokens: 0 };
-    for await (const event of streamAnswer(prompt, { signal: controller.signal })) {
+    for await (const event of streamAnswer(built, { signal: controller.signal })) {
       if (controller.signal.aborted) break;
       if (event.kind === "usage") {
         usage = event.usage;
@@ -76,7 +97,8 @@ async function runStream(
       send(ws, { type: "error", id, code: "cancelled", message: "request cancelled" });
     } else {
       const message = err instanceof Error ? err.message : String(err);
-      send(ws, { type: "error", id, code: "internal", message });
+      const code = isModelUnavailableError(err) ? "model-unavailable" : "internal";
+      send(ws, { type: "error", id, code, message });
     }
   } finally {
     active.delete(id);
@@ -98,8 +120,12 @@ function handleMessage(
         send(ws, { type: "error", id: message.id, code: "context-too-large", message: "text exceeds 40000 characters" });
         return;
       }
-      const prompt = buildPrompt({ kind: "chat", text: message.text, context: message.context });
-      void runStream(ws, active, message.id, prompt);
+      if (active.size >= MAX_CONCURRENT_STREAMS) {
+        send(ws, { type: "error", id: message.id, code: "bad-request", message: `too many concurrent requests (max ${MAX_CONCURRENT_STREAMS} per connection)` });
+        return;
+      }
+      const built = buildPrompt({ kind: "chat", text: message.text, context: message.context });
+      void runStream(ws, active, message.id, built);
       return;
     }
     case "summarize": {
@@ -107,8 +133,12 @@ function handleMessage(
         send(ws, { type: "error", id: message.id, code: "context-too-large", message: "context exceeds 40000 characters" });
         return;
       }
-      const prompt = buildPrompt({ kind: "summarize", context: message.context, length: message.length });
-      void runStream(ws, active, message.id, prompt);
+      if (active.size >= MAX_CONCURRENT_STREAMS) {
+        send(ws, { type: "error", id: message.id, code: "bad-request", message: `too many concurrent requests (max ${MAX_CONCURRENT_STREAMS} per connection)` });
+        return;
+      }
+      const built = buildPrompt({ kind: "summarize", context: message.context, length: message.length });
+      void runStream(ws, active, message.id, built);
       return;
     }
     case "act": {
@@ -116,13 +146,17 @@ function handleMessage(
         send(ws, { type: "error", id: message.id, code: "context-too-large", message: "text exceeds 40000 characters" });
         return;
       }
-      const prompt = buildPrompt({
+      if (active.size >= MAX_CONCURRENT_STREAMS) {
+        send(ws, { type: "error", id: message.id, code: "bad-request", message: `too many concurrent requests (max ${MAX_CONCURRENT_STREAMS} per connection)` });
+        return;
+      }
+      const built = buildPrompt({
         kind: "act",
         action: message.action,
         text: message.text,
         params: message.params,
       });
-      void runStream(ws, active, message.id, prompt);
+      void runStream(ws, active, message.id, built);
       return;
     }
     case "prompts.list": {
@@ -130,11 +164,15 @@ function handleMessage(
       return;
     }
     case "prompts.save": {
-      send(ws, { type: "prompts", id: message.id, items: savePrompt(promptsDirs, message.prompt) });
+      void savePrompt(promptsDirs, message.prompt).then((items) => {
+        send(ws, { type: "prompts", id: message.id, items });
+      });
       return;
     }
     case "prompts.delete": {
-      send(ws, { type: "prompts", id: message.id, items: deletePrompt(promptsDirs, message.name) });
+      void deletePrompt(promptsDirs, message.name).then((items) => {
+        send(ws, { type: "prompts", id: message.id, items });
+      });
       return;
     }
     case "cancel": {
@@ -155,11 +193,11 @@ function handleHandshakeMessage(
   }
   const result = parseClientMessage(raw);
   if (!result.ok || result.message.type !== "hello") {
-    ws.close(4401, "expected hello message with pairing secret");
+    rejectHandshake(ws, "expected hello message with pairing secret");
     return;
   }
   if (!checkSecret(result.message.secret, pairingSecret)) {
-    ws.close(4401, "invalid pairing secret");
+    rejectHandshake(ws, "invalid pairing secret");
     return;
   }
   ws.data.authed = true;
@@ -187,11 +225,11 @@ export function startServer(config: WingpenConfig, pairingSecret: string, prompt
     websocket: {
       open(ws) {
         if (!checkOrigin(ws.data.origin, config.allowedExtensionIds)) {
-          ws.close(4401, "origin not allowed");
+          rejectHandshake(ws, `origin not allowed: ${ws.data.origin ?? "(none)"}`);
           return;
         }
         ws.data.helloTimer = setTimeout(() => {
-          ws.close(4401, "handshake timeout: no hello within 3s");
+          rejectHandshake(ws, "handshake timeout: no hello within 3s");
         }, 3000);
       },
       message(ws, raw) {

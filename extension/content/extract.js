@@ -32,6 +32,28 @@
     return typeof el.innerText === "string" ? el.innerText : el.textContent || "";
   }
 
+  // A [contenteditable] subtree (a draft email, an unsent comment box) is
+  // "visible" as far as innerText is concerned, so it rides along with
+  // whatever container contains it. It was never intentionally shared by the
+  // user's click — exclude it before the text is sent anywhere. We can't just
+  // skip the container itself (the draft is usually nested a few levels
+  // inside an otherwise legitimate article/main), so instead strip out each
+  // editable descendant's own rendered text from the container's text.
+  function textExcludingEditable(el) {
+    const text = visibleText(el);
+    if (!el || typeof el.querySelectorAll !== "function") return text;
+    const editableDescendants = el.querySelectorAll("[contenteditable]");
+    if (!editableDescendants.length) return text;
+    // Longest fragment first: an editable region nested inside another
+    // editable region must not be subtracted twice from an already-shortened
+    // string.
+    const fragments = Array.from(editableDescendants)
+      .map((node) => visibleText(node))
+      .filter(Boolean)
+      .sort((a, b) => b.length - a.length);
+    return fragments.reduce((acc, fragment) => acc.split(fragment).join(""), text);
+  }
+
   // Picks the element that most likely holds the article body.
   //
   // Semantic containers win outright when they carry enough text. Otherwise we
@@ -41,7 +63,7 @@
   // outermost wrapper, which is the whole page.
   function articleText() {
     for (const el of document.querySelectorAll("article, main, [role='main']")) {
-      const text = visibleText(el);
+      const text = textExcludingEditable(el);
       if (text.trim().length > 200) return text;
     }
 
@@ -49,8 +71,10 @@
     let bestScore = 0;
     const candidates = document.body ? document.body.querySelectorAll("div, section") : [];
     for (const el of candidates) {
-      if (el.closest("nav, footer, header, aside")) continue;
-      const text = visibleText(el);
+      // A container that IS an editable region (not just one that contains
+      // one) is skipped outright, same as nav/footer/header/aside.
+      if (el.closest("nav, footer, header, aside, [contenteditable]")) continue;
+      const text = textExcludingEditable(el);
       const length = text.trim().length;
       if (length < 200) continue;
       const density = length / (el.getElementsByTagName("*").length + 1);
@@ -60,7 +84,7 @@
       }
     }
 
-    return best ? visibleText(best) : visibleText(document.body);
+    return best ? textExcludingEditable(best) : textExcludingEditable(document.body);
   }
 
   function getYouTubeVideoId() {
@@ -125,6 +149,33 @@
     return lines.length ? lines.join("\n") : undefined;
   }
 
+  // The query string and hash can carry session tokens (?token=…,
+  // #access_token=…). The model, the broker, and its logs never need them —
+  // only origin + path identify "which page", so that's all that leaves the
+  // page. Falls back to the raw href if location is somehow not a URL (should
+  // not happen in a browser tab, but truncate() elsewhere shows the same
+  // defensive style).
+  function safePageUrl() {
+    try {
+      return location.origin + location.pathname;
+    } catch {
+      return location.href;
+    }
+  }
+
+  // Extra signals for the page-type classifier (extension/content/detect.js).
+  // Gathering them needs the DOM, so it happens here; deciding what they mean
+  // does not, which is why that logic lives in a separate, DOM-free module.
+  function hasVideoElement() {
+    return !!document.querySelector("video");
+  }
+
+  function hasArticleMarkup() {
+    if (document.querySelector("article, [role='main']")) return true;
+    const ogType = document.querySelector('meta[property="og:type"]');
+    return !!ogType && ogType.getAttribute("content") === "article";
+  }
+
   const videoId = getYouTubeVideoId();
 
   if (videoId) {
@@ -136,26 +187,32 @@
     if (!transcript) {
       return {
         kind: "youtube",
-        url: location.href,
+        url: safePageUrl(),
         title: document.title || "",
         videoId,
         text: "",
         needsTranscript: true,
+        hasVideoElement: hasVideoElement(),
+        hasArticleMarkup: false,
       };
     }
     return {
       kind: "youtube",
-      url: location.href,
+      url: safePageUrl(),
       title: document.title || "",
       videoId,
       text: truncate(transcript),
+      hasVideoElement: hasVideoElement(),
+      hasArticleMarkup: false,
     };
   }
 
   return {
     kind: "page",
-    url: location.href,
+    url: safePageUrl(),
     title: document.title || "",
     text: truncate(articleText()),
+    hasVideoElement: hasVideoElement(),
+    hasArticleMarkup: hasArticleMarkup(),
   };
 })();

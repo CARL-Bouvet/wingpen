@@ -19,8 +19,8 @@
   </header>
 
   <section class="toolbar">
-    <button id="summarizePage" class="toolbar-button" type="button">Résumer cette page</button>
-    <button id="summarizeVideo" class="toolbar-button" type="button">Résumer cette vidéo</button>
+    <button id="mainAction" class="toolbar-button toolbar-button--primary" type="button">Résumer</button>
+    <button id="activateSite" class="link-button" type="button" hidden>Activer Wingpen sur ce site</button>
     <select id="promptSelect" class="prompt-select">
       <option value="">Bibliothèque de prompts…</option>
     </select>
@@ -30,8 +30,13 @@
   <main id="messages" class="messages" aria-live="polite"></main>
 
   <footer class="composer">
+    <label class="composer-toggle" for="attachPage">
+      <input type="checkbox" id="attachPage" disabled />
+      Wingpen lit cette page
+    </label>
     <textarea id="input" class="composer-input" placeholder="Écrivez à Wingpen…" rows="2"></textarea>
     <div class="composer-actions">
+      <button id="eraseConversation" class="link-button link-button--danger" type="button">Effacer la conversation</button>
       <button id="cancel" class="composer-button composer-button--ghost" type="button" hidden>Annuler</button>
       <button id="send" class="composer-button" type="button">Envoyer</button>
     </div>

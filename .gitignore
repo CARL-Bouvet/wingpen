@@ -9,3 +9,4 @@ notes/
 .bun-cache/
 .bun-tmp/
 .claude/
+extension-key.pem

@@ -3,6 +3,9 @@
 Contrat figé le 2026-09-16. **Les deux côtés se développent en parallèle contre ce document.**
 Toute modification se fait ici d'abord, jamais dans un seul des deux camps.
 
+Amendement 2026-09-20 : ajout de l'action `shorten` (Raccourcir) au message `act`, pour le menu
+contextuel de sélection du panneau.
+
 ## Transport
 
 WebSocket, `ws://127.0.0.1:8787/ws`.
@@ -24,6 +27,15 @@ Port par défaut 8787, surchargeable par `WINGPEN_PORT`. Le broker écoute **exc
 
 1. En-tête `Origin` strictement égal à `chrome-extension://<ID>` où `<ID>` est dans la config du
    broker (`~/.config/wingpen/config.json`, clé `allowedExtensionIds`, tableau).
+
+   L'ID d'une extension non empaquetée est dérivé par Chrome du chemin de son dossier — il change
+   si le dossier bouge, ce qui casse silencieusement le pairing (`checkOrigin()` ne matche plus
+   rien). Pour l'éviter, l'extension embarque une clé publique fixe (`extension/manifest.json`,
+   champ `key`, RSA 2048 en DER/base64) : Chrome dérive alors l'ID de cette clé, indépendamment du
+   dossier. L'ID en résultant, `hehlgipomfminodhahcjbencblepjhah`, est celui présent par défaut
+   dans `allowedExtensionIds` (`broker/src/config.ts`). La clé privée correspondante vit dans
+   `extension-key.pem` à la racine du dépôt, gitignorée, jamais commitée — sa perte oblige à
+   régénérer une paire et à republier l'extension sous un nouvel ID.
 2. Premier message client = `{"type":"hello","secret":"<jeton>","v":1}` dans les **3 secondes**.
    Le jeton est celui écrit par le broker dans `~/.local/share/wingpen/pairing.txt` au premier
    démarrage ; l'utilisateur le colle une fois dans les options de l'extension, qui le range dans
@@ -34,6 +46,13 @@ Réponse : `{"type":"hello-ok","v":1,"models":["claude"],"capabilities":["chat",
 Note honnête sur ce que ça protège : `Origin` arrête une page web hostile, le jeton arrête une
 autre extension. Ni l'un ni l'autre n'arrête un programme qui tourne déjà sous le même compte
 utilisateur — même frontière que Pyramid, assumée, pas résolue.
+
+**Échec de poignée de main : un seul message générique.** Quel que soit l'échec (mauvais `Origin`,
+mauvais jeton, pas de `hello` dans les 3 s), le broker envoie exactement
+`{"type":"error","id":"hello","code":"unauthorized","message":"unauthorized"}` puis ferme en 4401
+avec la même raison générique. Un programme local qui teste la poignée de main ne peut pas
+distinguer laquelle des trois vérifications a échoué — la raison précise part seulement dans le
+log stderr du broker.
 
 ## Messages client → broker
 
@@ -46,8 +65,10 @@ Tout message porte un `id` (chaîne, unique par requête, généré côté exten
 // Résumé d'une page ou d'une vidéo. Le broker choisit la stratégie selon context.kind.
 { "type": "summarize", "id": "c2", "context": { /* voir Context */ }, "length": "short" | "medium" }
 
-// Action sur la sélection de l'utilisateur.
-{ "type": "act", "id": "c3", "action": "translate" | "rewrite" | "explain",
+// Action sur la sélection de l'utilisateur. Déclenché depuis le menu
+// contextuel du navigateur (clic droit sur une sélection) : Reformuler →
+// rewrite, Raccourcir → shorten, Expliquer → explain, Traduire → translate.
+{ "type": "act", "id": "c3", "action": "translate" | "rewrite" | "explain" | "shorten",
   "text": "...", "params": { "targetLang": "fr" } }
 
 // Bibliothèque de prompts (stockée côté broker).
@@ -64,16 +85,46 @@ Tout message porte un `id` (chaîne, unique par requête, généré côté exten
 ```jsonc
 {
   "kind": "page" | "youtube" | "selection",
-  "url": "https://…",
+  "url": "https://…",   // origine + chemin UNIQUEMENT — jamais la query string ni le fragment
   "title": "…",
   "text": "…",          // texte principal déjà extrait et assaini par le content script
   "videoId": "…"        // uniquement si kind === "youtube"
 }
 ```
 
+**`url` n'est jamais l'URL complète.** Le content script envoie `location.origin +
+location.pathname`, jamais `location.href` : une query string ou un fragment peuvent porter un
+jeton de session (`?token=…`, `#access_token=…`) que rien en aval n'a besoin de voir.
+
 **Le content script envoie du texte, jamais du HTML.** Il extrait, assainit, tronque à
 40 000 caractères et transmet. Le broker ne fait confiance à rien de ce qui vient de la page :
-il traite `text` comme une donnée, jamais comme une instruction.
+il traite `text`, `title` et `url` comme des données, jamais comme une instruction — voir
+« Construction du prompt » plus bas.
+
+## Construction du prompt (assainissement et anti-injection)
+
+`buildPrompt()` (`broker/src/model.ts`) est le seul endroit du broker qui assemble un prompt. Tout
+contenu page-contrôlé (`context.text`, `context.title`, `context.url`, le texte sélectionné d'un
+`act`) est encadré par un délimiteur généré à neuf, aléatoirement, à **chaque** appel :
+`<<<wingpen-<16 hex>` … `wingpen-<16 hex>>>>`. Le system prompt nomme ce délimiteur comme seule
+frontière valable et précise que tout ce qui est dedans est une donnée, jamais une instruction. En
+plus de l'aléa du nonce : toute occurrence de la forme du délimiteur et toute suite de 3 guillemets
+ou plus sont neutralisées dans le texte avant interpolation (défense en profondeur — l'ancien
+format de délimiteur figé, `"""`, ne doit plus pouvoir servir de frontière). `title` et `url` sont
+en plus aplatis (tous les espaces/retours à la ligne réduits à un seul espace) et tronqués à
+300 caractères, et placés **à l'intérieur** du délimiteur — jamais au-dessus, là où le system
+prompt traite le contenu comme la requête de l'utilisateur.
+
+## Limites côté broker
+
+- **Délai maximal d'un appel modèle : 120 s** (`MODEL_TIMEOUT_MS`, `broker/src/model.ts`). Passé
+  ce délai sans réponse, le broker abandonne l'appel et envoie `{"type":"error","code":
+  "model-unavailable", ...}` — sans ce garde-fou, un appel qui reste bloqué ne renvoie jamais ni
+  `done` ni `error`, ce qui viole l'invariant « tout `id` reçoit un terminal » ci-dessous.
+- **Flux modèle simultanés par connexion : 3** (`MAX_CONCURRENT_STREAMS`,
+  `broker/src/server.ts`). Un `chat`/`summarize`/`act` de plus alors que 3 sont déjà en cours reçoit
+  `{"type":"error","code":"bad-request","message":"too many concurrent requests (max 3 per
+  connection)"}` sans lancer de processus `claude` supplémentaire.
 
 ## Messages broker → client
 

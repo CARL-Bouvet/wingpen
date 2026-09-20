@@ -46,7 +46,9 @@ export interface SummarizeMessage {
   length: "short" | "medium";
 }
 
-export type ActAction = "translate" | "rewrite" | "explain";
+// "shorten" added for the panel's selection context menu (Raccourcir) —
+// see docs/PROTOCOL.md and the matching addition in model.ts's ACT_VERB.
+export type ActAction = "translate" | "rewrite" | "explain" | "shorten";
 
 export interface ActMessage {
   type: "act";
@@ -228,7 +230,12 @@ export function parseClientMessage(raw: string): ParseResult {
       return { ok: true, message: { type: "summarize", id, context, length: parsed.length } };
     }
     case "act": {
-      if (parsed.action !== "translate" && parsed.action !== "rewrite" && parsed.action !== "explain") {
+      if (
+        parsed.action !== "translate" &&
+        parsed.action !== "rewrite" &&
+        parsed.action !== "explain" &&
+        parsed.action !== "shorten"
+      ) {
         return { ok: false, error: { code: "bad-request", message: "act: invalid action", id } };
       }
       if (!isNonEmptyString(parsed.text)) {

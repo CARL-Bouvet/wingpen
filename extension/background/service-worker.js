@@ -6,7 +6,18 @@
 // (idle timeout, MV3 lifecycle), so it only relays messages. The panel is
 // responsible for persisting the conversation (chrome.storage.local).
 
-const WS_URL = "ws://127.0.0.1:8787/ws";
+// The broker's port is configurable server-side (config.json "port"), but
+// manifest.json's "externally_connectable.matches" cannot take a dynamic
+// value — Chrome only accepts a literal match pattern there. So this port is
+// hardcoded in exactly two places, kept equal by convention: here, and
+// manifest.json's "externally_connectable" entry. A broker running on a
+// non-default port breaks one-click pairing; see docs/PROTOCOL.md.
+const BROKER_PORT = 8787;
+const WS_URL = `ws://127.0.0.1:${BROKER_PORT}/ws`;
+// Prefix an external sender's URL must start with to be trusted by
+// onMessageExternal below — checked in addition to (not instead of)
+// manifest.json's "externally_connectable" match list.
+const PAIR_ORIGIN_PREFIX = `http://127.0.0.1:${BROKER_PORT}/`;
 const PROTOCOL_VERSION = 1;
 const RECONNECT_ALARM = "wingpen-reconnect";
 const MAX_BACKOFF_MS = 30000;
@@ -118,6 +129,45 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return undefined;
 });
 
+// One-click pairing (docs/PROTOCOL.md "Appairage en un clic"): the broker's
+// own /pair page, loaded in a normal tab, hands us the pairing token
+// directly via chrome.runtime.sendMessage(EXTENSION_ID, …). This is the
+// ONLY entry point that can write to chrome.storage.session from outside the
+// extension, so it is checked twice — manifest.json's
+// "externally_connectable.matches" (Chrome enforces this before we even see
+// the message) AND explicitly here, because the matches list alone is a
+// prefix a hostile page reachable via the same loopback port could also
+// satisfy in principle (e.g. some other origin under 127.0.0.1 on the same
+// port is not a thing today, but the explicit check costs nothing and does
+// not rely solely on Chrome's manifest-level enforcement).
+chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+  if (!sender.url || !sender.url.startsWith(PAIR_ORIGIN_PREFIX)) {
+    sendResponse({ ok: false, reason: "origin not allowed" });
+    return undefined;
+  }
+  // A message from a normal tab always carries `sender.tab`; refuse anything
+  // that doesn't (e.g. sent from another extension's background context).
+  if (!sender.tab) {
+    sendResponse({ ok: false, reason: "no sender tab" });
+    return undefined;
+  }
+  if (!message || message.type !== "wingpen:pair") {
+    sendResponse({ ok: false, reason: "unknown message type" });
+    return undefined;
+  }
+  if (typeof message.token !== "string" || !message.token) {
+    sendResponse({ ok: false, reason: "missing token" });
+    return undefined;
+  }
+
+  (async () => {
+    await chrome.storage.session.set({ pairingToken: message.token });
+    forceReconnect();
+    sendResponse({ ok: true });
+  })();
+  return true; // keep the message channel open for the async sendResponse above
+});
+
 function broadcast(message) {
   chrome.runtime.sendMessage(message).catch(() => {
     // No listener (panel/options closed) — fine, nothing to relay to.
@@ -176,6 +226,23 @@ async function connectIfNeeded() {
     // but log it so a case where that assumption breaks isn't silently invisible.
     console.warn("wingpen: WebSocket error", { state: wsState, type: event?.type, event });
   });
+}
+
+// Called right after a fresh token lands via one-click pairing: any stale
+// socket/backoff state from repeated failed attempts on the OLD (or absent)
+// token must not delay the very next attempt.
+function forceReconnect() {
+  if (ws) {
+    try {
+      ws.close();
+    } catch {
+      // already closed/closing — fine.
+    }
+    ws = null;
+  }
+  backoffMs = 1000;
+  setState("disconnected");
+  connectIfNeeded();
 }
 
 function scheduleReconnect() {

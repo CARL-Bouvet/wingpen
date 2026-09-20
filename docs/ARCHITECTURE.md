@@ -166,12 +166,18 @@ théorie (par exemple via `wscat`), inatteignable depuis l'interface livrée.
 
 **Jeton de pairage.** Créé côté broker, une seule fois, au premier démarrage :
 `loadOrCreatePairingSecret()` génère 16 octets aléatoires en hex et les écrit dans
-`~/.local/share/wingpen/pairing.txt`, permissions `0600` (`config.ts:67-79`). L'utilisateur le
-copie une fois dans la page d'options ; il est alors stocké côté extension dans
-`chrome.storage.session` (`options.js:32`) — une mémoire vive au sens propre : elle n'est jamais
-écrite sur disque et s'efface à la fermeture du navigateur (`options.js:3-4`). À chaque connexion,
-le service worker le relit et l'envoie dans le message `hello` (`service-worker.js:73,90`). Le
-broker le vérifie par comparaison à temps constant, `checkSecret()`
+`~/.local/share/wingpen/pairing.txt`, permissions `0600` (`config.ts:67-79`). Il rejoint l'extension
+par l'un de deux chemins : soit collé à la main dans la page d'options (repli), soit — chemin
+normal depuis l'appairage en un clic — transmis directement par la page `GET /pair` que le broker
+sert lui-même via `chrome.runtime.sendMessage(EXTENSION_ID, {type:"wingpen:pair", token})`, reçu
+côté extension par `chrome.runtime.onMessageExternal` (`service-worker.js`, voir
+`docs/PROTOCOL.md` « Appairage en un clic »). Dans les deux cas, il est stocké côté extension dans
+`chrome.storage.session` (jamais `chrome.storage.local`) — une mémoire vive au sens propre : elle
+n'est jamais écrite sur disque et s'efface à la fermeture du navigateur. C'est précisément ce qui
+rend l'appairage en un clic nécessaire : ce stockage s'efface à **chaque** redémarrage du
+navigateur, donc sans lui l'utilisateur recollerait le jeton à la main à chaque session. À chaque
+connexion, le service worker le relit et l'envoie dans le message `hello` (`service-worker.js:73,90`).
+Le broker le vérifie par comparaison à temps constant, `checkSecret()`
 (`server.ts:32-38,161`) — un détail qui compte : une comparaison naïve fuiterait le secret
 octet par octet via le temps de réponse.
 

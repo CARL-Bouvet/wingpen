@@ -27,6 +27,26 @@
     </span>
   </div>
 
+  <h1>Modèle</h1>
+  <p class="help">
+    Wingpen peut parler à deux fournisseurs de modèle : le CLI Claude installé
+    sur cette machine, ou un modèle Ollama qui tourne en local — le seul choix
+    pour lequel rien ne quitte cet ordinateur. Ce réglage vit dans le broker ;
+    changer de fournisseur ici s'applique à la prochaine requête.
+  </p>
+  <div id="modelSection">
+    <p id="modelDisconnected" class="help" hidden>
+      Broker non connecté — impossible d'afficher ou de changer le fournisseur de modèle.
+    </p>
+    <ul id="providerList" class="provider-list"></ul>
+    <div id="modelField" class="field" hidden>
+      <label for="modelSelect">Modèle</label>
+      <select id="modelSelect" hidden></select>
+      <input id="modelInput" type="text" placeholder="ex : llama3.2 ou claude-sonnet-4-5 (optionnel)" hidden />
+      <button id="modelSave" type="button" hidden>Enregistrer le modèle</button>
+    </div>
+  </div>
+
   <h1>Conservation de l'historique</h1>
   <p class="help">
     La conversation (y compris les extraits de pages qu'elle contient) est
@@ -43,6 +63,14 @@
       <option value="never">Jamais (aucune expiration automatique)</option>
     </select>
   </div>
+
+  <h1>Sites où Wingpen se reconnaît tout seul</h1>
+  <p class="help">
+    Sans cette autorisation, Chrome cache à l'extension quel site est ouvert
+    dans l'onglet, donc le bouton principal reste générique tant que vous
+    n'avez pas cliqué dessus.
+  </p>
+  <ul id="siteToggles" class="site-toggles"></ul>
 
   <script src="options.js" type="module"></script>
 </body>

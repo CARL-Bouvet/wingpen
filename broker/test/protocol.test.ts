@@ -98,4 +98,50 @@ describe("parseClientMessage", () => {
     const result = parseClientMessage(JSON.stringify({ type: "hello", v: 1 }));
     expect(result.ok).toBe(false);
   });
+
+  test("parses settings.get", () => {
+    const result = parseClientMessage(JSON.stringify({ type: "settings.get", id: "s1" }));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.message).toEqual({ type: "settings.get", id: "s1" });
+    }
+  });
+
+  test("parses settings.set with a known provider and a model", () => {
+    const result = parseClientMessage(
+      JSON.stringify({ type: "settings.set", id: "s2", provider: "ollama", model: "llama3.2" }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.message).toEqual({ type: "settings.set", id: "s2", provider: "ollama", model: "llama3.2" });
+    }
+  });
+
+  test("parses settings.set with only a model, provider omitted", () => {
+    const result = parseClientMessage(JSON.stringify({ type: "settings.set", id: "s3", model: "llama3.2" }));
+    expect(result.ok).toBe(true);
+    if (result.ok && result.message.type === "settings.set") {
+      expect(result.message.provider).toBeUndefined();
+      expect(result.message.model).toBe("llama3.2");
+    }
+  });
+
+  test("rejects settings.set with an unknown provider", () => {
+    const result = parseClientMessage(
+      JSON.stringify({ type: "settings.set", id: "s4", provider: "openai-nonexistent" }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("bad-request");
+      expect(result.error.id).toBe("s4");
+    }
+  });
+
+  test("rejects settings.set with a non-string model", () => {
+    const result = parseClientMessage(JSON.stringify({ type: "settings.set", id: "s5", model: 42 }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("bad-request");
+    }
+  });
 });

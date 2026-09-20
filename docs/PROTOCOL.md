@@ -6,6 +6,13 @@ Toute modification se fait ici d'abord, jamais dans un seul des deux camps.
 Amendement 2026-09-20 : ajout de l'action `shorten` (Raccourcir) au message `act`, pour le menu
 contextuel de sélection du panneau.
 
+Amendement 2026-09-20 (2) : ajout de la route `GET /pair` et du message externe `wingpen:pair`,
+pour l'appairage en un clic — voir « Appairage en un clic » plus bas.
+
+Amendement 2026-09-20 (3) : ajout des messages `settings.get` / `settings.set` (et de la réponse
+`settings`), pour choisir le fournisseur de modèle (`claude-cli` ou `ollama`) depuis la page
+d'options — voir « Fournisseur de modèle » plus bas.
+
 ## Transport
 
 WebSocket, `ws://127.0.0.1:8787/ws`.
@@ -54,6 +61,46 @@ avec la même raison générique. Un programme local qui teste la poignée de ma
 distinguer laquelle des trois vérifications a échoué — la raison précise part seulement dans le
 log stderr du broker.
 
+## Appairage en un clic
+
+Coller le jeton à la main dans les options reste possible (repli), mais n'est plus le chemin
+normal. Le broker sert lui-même une page d'appairage qui le transmet directement à l'extension.
+
+**`GET /pair`** (broker, port du broker, pas `/ws`) — répond `200 text/html`, une page HTML
+autonome générée côté serveur avec le jeton de pairage et le premier `allowedExtensionIds` de la
+config injectés dedans (échappés, voir `broker/src/pair.ts`). C'est la **seule** route HTTP en
+dehors de `/ws` ; tout le reste répond `404` (voir `checkOrigin`-style défense : cette page reste
+servie exclusivement sur `127.0.0.1`, jamais `0.0.0.0`). Elle n'est **pas** une page d'extension :
+la CSP de `manifest.json` ne s'y applique pas, d'où le `<style>`/`<script>` en ligne, acceptable
+ici seulement.
+
+Le bouton « Connecter Wingpen » de cette page appelle :
+```js
+chrome.runtime.sendMessage(EXTENSION_ID, { type: "wingpen:pair", token })
+```
+— un message externe (`chrome.runtime.onMessageExternal`), rendu possible par
+`manifest.json` : `"externally_connectable": { "matches": ["http://127.0.0.1:8787/*"] }`.
+
+Côté extension, `background/service-worker.js` vérifie, dans cet ordre, avant tout traitement :
+1. `sender.url` commence par `http://127.0.0.1:8787/` (vérification explicite, ne fait pas
+   confiance à la liste `matches` du manifeste seule) ;
+2. `sender.tab` est présent (un message venu d'un contexte non-onglet est refusé) ;
+3. `message.type === "wingpen:pair"` et `message.token` est une chaîne non vide.
+
+Sur succès : le jeton est écrit dans `chrome.storage.session` (jamais `local` — règle non
+négociable n°1), une reconnexion est déclenchée immédiatement, et la réponse est
+`{ ok: true }`. Sur échec, `{ ok: false, reason: "…" }`. La page affiche le résultat et, si
+l'extension ne répond pas (non installée, mauvais id), propose la copie manuelle du jeton en repli.
+
+**Limitation connue — le port ne peut pas être dynamique ici.** `config.json` permet de changer
+le port du broker (clé `port`), mais `externally_connectable.matches` de `manifest.json`
+n'accepte qu'un motif littéral, pas une variable : Chrome ne permet aucune interpolation à ce
+niveau. Le port `8787` est donc en dur à trois endroits qui doivent rester synchronisés à la main :
+`manifest.json` (`externally_connectable`), `background/service-worker.js` (`BROKER_PORT`, qui
+dérive aussi `WS_URL`), et `panel/panel.js` (`BROKER_PORT`, pour ouvrir `/pair`). Un broker lancé
+sur un port non standard casse l'appairage en un clic silencieusement — le repli « coller le jeton
+à la main » dans les options reste le recours dans ce cas.
+
 ## Messages client → broker
 
 Tout message porte un `id` (chaîne, unique par requête, généré côté extension) et un `type`.
@@ -78,6 +125,13 @@ Tout message porte un `id` (chaîne, unique par requête, généré côté exten
 
 // Annulation d'une requête en cours.
 { "type": "cancel", "id": "c7", "target": "c2" }
+
+// Lire le fournisseur de modèle actif et la liste des fournisseurs connus.
+{ "type": "settings.get", "id": "c8" }
+
+// Changer le fournisseur et/ou le modèle. Champs omis = inchangés. Ne
+// transporte JAMAIS de secret (pas de clé d'API) — voir CLAUDE.md règle n°1.
+{ "type": "settings.set", "id": "c9", "provider": "ollama", "model": "llama3.2" }
 ```
 
 ### Context
@@ -114,6 +168,49 @@ format de délimiteur figé, `"""`, ne doit plus pouvoir servir de frontière). 
 en plus aplatis (tous les espaces/retours à la ligne réduits à un seul espace) et tronqués à
 300 caractères, et placés **à l'intérieur** du délimiteur — jamais au-dessus, là où le system
 prompt traite le contenu comme la requête de l'utilisateur.
+
+## Fournisseur de modèle
+
+Amendement 2026-09-20 (3). Le broker sait parler à deux fournisseurs de modèle, choisis derrière
+une interface commune (`broker/src/providers/`, voir docs/DECISIONS.md T8) :
+
+- **`claude-cli`** (par défaut) — le binaire `claude` installé sur la machine, via le SDK Claude
+  Agent. Comportement inchangé par rapport à avant cet amendement.
+- **`ollama`** — un démon Ollama local (`http://127.0.0.1:11434` par défaut, surchargeable par la
+  clé `ollamaUrl` de `config.json`). C'est le seul fournisseur pour lequel Wingpen peut
+  honnêtement affirmer que rien ne sort de la machine.
+
+**`settings.get`** ne prend rien d'autre qu'un `id`. Réponse :
+
+```jsonc
+{
+  "type": "settings",
+  "id": "c8",
+  "provider": "claude-cli",     // fournisseur actuellement sélectionné
+  "model": "llama3.2",          // optionnel — nom de modèle propre au fournisseur
+  "available": [
+    { "id": "claude-cli", "label": "Claude (CLI locale)", "available": true },
+    { "id": "ollama", "label": "Ollama (local)", "available": false, "reason": "Ollama unreachable at http://127.0.0.1:11434" }
+  ],
+  "models": ["llama3.2:latest", "mistral:latest"]  // seulement si le fournisseur actif sait lister ses modèles
+}
+```
+
+`available` liste **toujours** tous les fournisseurs connus, y compris ceux qui ne sont pas
+utilisables maintenant — un fournisseur indisponible n'est jamais caché, seulement signalé avec une
+raison courte (`reason`).
+
+**`settings.set`** accepte `provider` et/ou `model`, tous deux optionnels — un champ omis reste
+inchangé côté broker. Un `provider` qui n'est ni `"claude-cli"` ni `"ollama"` est rejeté en
+`bad-request` par `parseClientMessage()` (`broker/src/protocol.ts`), avant tout traitement. Ce
+message ne transporte **jamais** de secret — pas de clé d'API, pas maintenant, voir CLAUDE.md règle
+n°1. Sur succès, le broker persiste le changement dans `~/.config/wingpen/config.json` (permissions
+`0600`, comme le reste du fichier) et répond avec un `settings` frais, construit de la même façon
+que pour `settings.get`.
+
+Si le modèle configuré pour `ollama` n'apparaît pas dans la réponse de son `/api/tags`, une
+requête `chat`/`summarize`/`act` échoue en `model-unavailable`, avec le nom du modèle manquant dans
+le message — jamais de repli silencieux sur un autre modèle installé.
 
 ## Limites côté broker
 

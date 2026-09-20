@@ -1,6 +1,8 @@
 // TypeScript types and parser for every message defined in docs/PROTOCOL.md.
 // The 256 KB per-message cap is enforced here, at parse time.
 
+import type { ProviderId } from "./config.ts";
+
 export const MAX_MESSAGE_BYTES = 256 * 1024;
 
 export type ErrorCode =
@@ -81,6 +83,22 @@ export interface CancelMessage {
   target: string;
 }
 
+// Added 2026-09-20 (3) — see docs/PROTOCOL.md's dated amendment. Lets the
+// options page read and change the active model provider. Never carries a
+// secret (no API key field) — see CLAUDE.md rule #1.
+export interface SettingsGetMessage {
+  type: "settings.get";
+  id: string;
+}
+
+export interface SettingsSetMessage {
+  type: "settings.set";
+  id: string;
+  /** Omitted fields are left unchanged server-side. */
+  provider?: ProviderId;
+  model?: string;
+}
+
 export type ClientMessage =
   | HelloMessage
   | ChatMessage
@@ -89,7 +107,9 @@ export type ClientMessage =
   | PromptsListMessage
   | PromptsSaveMessage
   | PromptsDeleteMessage
-  | CancelMessage;
+  | CancelMessage
+  | SettingsGetMessage
+  | SettingsSetMessage;
 
 // --- Server -> client messages ---
 
@@ -125,12 +145,34 @@ export interface HelloOkMessage {
   capabilities: string[];
 }
 
+/** Reported per known provider in a SettingsMessage's `available` array —
+ * every provider Wingpen knows about is listed, including unavailable ones
+ * (with `reason`), never hidden. */
+export interface ProviderStatus {
+  id: ProviderId;
+  label: string;
+  available: boolean;
+  reason?: string;
+}
+
+export interface SettingsMessage {
+  type: "settings";
+  id: string;
+  provider: ProviderId;
+  model?: string;
+  available: ProviderStatus[];
+  /** Installed model names for the currently-selected provider, when it can
+   * enumerate them (currently only ollama). Absent otherwise. */
+  models?: string[];
+}
+
 export type ServerMessage =
   | ChunkMessage
   | DoneMessage
   | ErrorMessage
   | PromptsMessage
-  | HelloOkMessage;
+  | HelloOkMessage
+  | SettingsMessage;
 
 // --- Parsing ---
 
@@ -265,6 +307,20 @@ export function parseClientMessage(raw: string): ParseResult {
         return { ok: false, error: { code: "bad-request", message: "cancel: missing target", id } };
       }
       return { ok: true, message: { type: "cancel", id, target: parsed.target } };
+    }
+    case "settings.get": {
+      return { ok: true, message: { type: "settings.get", id } };
+    }
+    case "settings.set": {
+      const provider = parsed.provider;
+      if (provider !== undefined && provider !== "claude-cli" && provider !== "ollama") {
+        return { ok: false, error: { code: "bad-request", message: "settings.set: unknown provider", id } };
+      }
+      const model = parsed.model;
+      if (model !== undefined && typeof model !== "string") {
+        return { ok: false, error: { code: "bad-request", message: "settings.set: invalid model", id } };
+      }
+      return { ok: true, message: { type: "settings.set", id, provider, model } };
     }
     default:
       return { ok: false, error: { code: "bad-request", message: `unknown type: ${type}`, id } };

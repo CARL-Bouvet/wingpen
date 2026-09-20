@@ -62,3 +62,42 @@ select {
   border-radius: 8px;
   background: #fff;
 }
+.provider-list {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.provider-item label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+}
+.provider-item input[type="radio"]:disabled + span {
+  color: #999;
+}
+.provider-reason {
+  font-size: 12px;
+  color: #d5495a;
+}
+.site-toggles {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.site-toggle label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.site-toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}

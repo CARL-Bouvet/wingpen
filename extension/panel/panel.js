@@ -54,6 +54,12 @@
 import { classifyPageType, classifyPageTypeFromMetadata } from "../content/detect.js";
 import { applyRetention } from "./retention.js";
 
+// Must match extension/background/service-worker.js's BROKER_PORT and
+// manifest.json's "externally_connectable" entry — see the comment there for
+// why this can't be derived from config at runtime.
+const BROKER_PORT = 8787;
+const PAIR_URL = `http://127.0.0.1:${BROKER_PORT}/pair`;
+
 const STORAGE_KEY = "wingpen:conversation";
 const ATTACH_PAGE_KEY = "wingpen:attachPage";
 const PENDING_ACTION_KEY = "wingpen:pendingAction";
@@ -70,6 +76,9 @@ const MAIN_BUTTON_LABELS = {
 const els = {
   status: document.getElementById("status"),
   statusLabel: document.querySelector("#status .status-label"),
+  connectionBanner: document.getElementById("connectionBanner"),
+  connectionBannerText: document.getElementById("connectionBannerText"),
+  connectWingpen: document.getElementById("connectWingpen"),
   openOptions: document.getElementById("openOptions"),
   mainAction: document.getElementById("mainAction"),
   activateSite: document.getElementById("activateSite"),
@@ -120,6 +129,7 @@ async function init() {
   renderAll();
 
   els.openOptions.addEventListener("click", () => chrome.runtime.openOptionsPage());
+  els.connectWingpen.addEventListener("click", () => chrome.tabs.create({ url: PAIR_URL }));
   els.mainAction.addEventListener("click", () => summarize());
   els.activateSite.addEventListener("click", activateOnThisSite);
   els.send.addEventListener("click", sendChat);
@@ -252,6 +262,31 @@ function applyStatus(state) {
     unknown: "…",
   };
   els.statusLabel.textContent = labels[state] ?? state;
+
+  applyConnectionBanner(state);
+}
+
+// Two states must never be confused (see the design brief for this feature):
+// "no-token" means the extension has never been paired (or the browser was
+// restarted and chrome.storage.session was wiped, see CLAUDE.md rule #1) —
+// the fix is one click. "disconnected" means we DO hold a token but the
+// broker itself isn't answering right now — the fix is starting the broker.
+// The options page's paste field remains the fallback for both; see options.js.
+function applyConnectionBanner(state) {
+  if (state === "no-token") {
+    els.connectionBannerText.textContent = "Wingpen n'est pas encore connecté à votre broker.";
+    els.connectWingpen.hidden = false;
+    els.connectionBanner.hidden = false;
+    return;
+  }
+  if (state === "disconnected") {
+    els.connectionBannerText.textContent =
+      "Le broker Wingpen ne répond pas. Lancez-le sur votre machine (voir le README), puis réessayez.";
+    els.connectWingpen.hidden = true;
+    els.connectionBanner.hidden = false;
+    return;
+  }
+  els.connectionBanner.hidden = true;
 }
 
 // --- Chat ---------------------------------------------------------------
@@ -264,7 +299,34 @@ async function sendChat() {
   const attach = !els.attachPage.disabled && els.attachPage.checked && currentTabId != null;
   let context;
   if (attach) {
-    context = await extractFromTab(currentTabId).catch(() => undefined);
+    // Never send the question alone when the user asked for the page to be
+    // attached: a blind answer looks like a working feature and wastes a turn.
+    try {
+      context = await extractFromTab(currentTabId);
+    } catch (err) {
+      if (err instanceof NoAccessError) {
+        knownOrigin = err.origin;
+        showActivateAffordance(err.origin);
+        addMessage({
+          id: newId(),
+          role: "system",
+          text: "⚠ Wingpen n'a pas accès à cette page, la question n'a pas été envoyée. Cliquez sur « Activer Wingpen sur ce site » ci-dessus, ou décochez « Wingpen lit cette page » pour poser une question générale.",
+        });
+      } else if (looksLikeAccessDenied(err)) {
+        addMessage({
+          id: newId(),
+          role: "system",
+          text: "⚠ Wingpen n'a pas accès à cette page, la question n'a pas été envoyée. Cliquez sur l'icône Wingpen dans la barre d'outils pour l'autoriser sur cet onglet.",
+        });
+      } else {
+        addMessage({
+          id: newId(),
+          role: "system",
+          text: `⚠ Lecture de la page impossible, la question n'a pas été envoyée : ${err.message}`,
+        });
+      }
+      return;
+    }
   }
 
   const id = newId();

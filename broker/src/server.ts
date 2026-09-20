@@ -4,15 +4,27 @@
 
 import { timingSafeEqual } from "node:crypto";
 import {
+  DEFAULT_CONFIG,
   defaultDirs,
   loadConfig,
   loadOrCreatePairingSecret,
+  saveConfig,
   type Dirs,
+  type ProviderId,
   type WingpenConfig,
 } from "./config.ts";
-import { parseClientMessage, type ClientMessage, type ServerMessage } from "./protocol.ts";
-import { buildPrompt, streamAnswer, isModelUnavailableError, type BuiltPrompt } from "./model.ts";
+import {
+  parseClientMessage,
+  type ClientMessage,
+  type ProviderStatus,
+  type ServerMessage,
+  type SettingsSetMessage,
+} from "./protocol.ts";
+import { buildPrompt, isModelUnavailableError, type BuiltPrompt } from "./model.ts";
 import { listPrompts, savePrompt, deletePrompt, type PromptsDirs } from "./prompts.ts";
+import { renderPairPage } from "./pair.ts";
+import { PROVIDERS, getProvider } from "./providers/registry.ts";
+import type { ModelProvider, ProviderRuntimeOptions } from "./providers/types.ts";
 
 // Content is truncated to 40 000 chars by the content script (see PROTOCOL.md).
 // The broker enforces the same cap server-side as a safety net.
@@ -74,12 +86,14 @@ async function runStream(
   active: Map<string, AbortController>,
   id: string,
   built: BuiltPrompt,
+  provider: ModelProvider,
+  providerOpts: ProviderRuntimeOptions,
 ): Promise<void> {
   const controller = new AbortController();
   active.set(id, controller);
   try {
     let usage = { inputTokens: 0, outputTokens: 0 };
-    for await (const event of streamAnswer(built, { signal: controller.signal })) {
+    for await (const event of provider.streamAnswer(built, { signal: controller.signal, ...providerOpts })) {
       if (controller.signal.aborted) break;
       if (event.kind === "usage") {
         usage = event.usage;
@@ -105,11 +119,59 @@ async function runStream(
   }
 }
 
+/** Probes every known provider's isAvailable() and, for the currently active
+ * one, its listModels() (when it has one) — the full payload of a `settings`
+ * reply. A provider that errors while probing is reported unavailable rather
+ * than crashing the whole response; never hidden (see docs/PROTOCOL.md). */
+async function buildSettingsPayload(config: WingpenConfig): Promise<{
+  provider: ProviderId;
+  model?: string;
+  available: ProviderStatus[];
+  models?: string[];
+}> {
+  const provider = config.provider ?? DEFAULT_CONFIG.provider!;
+  const opts: ProviderRuntimeOptions = { model: config.model, ollamaUrl: config.ollamaUrl };
+  const available = await Promise.all(
+    PROVIDERS.map(async (p): Promise<ProviderStatus> => {
+      try {
+        const a = await p.isAvailable(opts);
+        return { id: p.id as ProviderId, label: p.label, available: a.available, reason: a.reason };
+      } catch (err) {
+        return {
+          id: p.id as ProviderId,
+          label: p.label,
+          available: false,
+          reason: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }),
+  );
+  const active = getProvider(provider);
+  const models = active?.listModels ? await active.listModels(opts).catch(() => undefined) : undefined;
+  return { provider, model: config.model, available, models };
+}
+
+/** Bundles what handleMessage needs beyond the message itself: the provider
+ * currently selected (for chat/summarize/act) and read/write access to the
+ * live config (for settings.get/settings.set). Config is process-wide per
+ * server instance — one broker serves one user — so `set` mutates the
+ * closure in startServer() directly. */
+interface SettingsCtx {
+  provider: ModelProvider;
+  providerOpts: ProviderRuntimeOptions;
+  getConfig(): WingpenConfig;
+  /** Applies provider/model fields from a settings.set message, persists to
+   * config.json when a configDir was supplied to startServer, and returns
+   * the resulting config. */
+  applySettings(patch: Pick<SettingsSetMessage, "provider" | "model">): WingpenConfig;
+}
+
 function handleMessage(
   ws: { send(data: string): unknown },
   message: ClientMessage,
   active: Map<string, AbortController>,
   promptsDirs: PromptsDirs,
+  settingsCtx: SettingsCtx,
 ): void {
   switch (message.type) {
     case "hello":
@@ -125,7 +187,7 @@ function handleMessage(
         return;
       }
       const built = buildPrompt({ kind: "chat", text: message.text, context: message.context });
-      void runStream(ws, active, message.id, built);
+      void runStream(ws, active, message.id, built, settingsCtx.provider, settingsCtx.providerOpts);
       return;
     }
     case "summarize": {
@@ -138,7 +200,7 @@ function handleMessage(
         return;
       }
       const built = buildPrompt({ kind: "summarize", context: message.context, length: message.length });
-      void runStream(ws, active, message.id, built);
+      void runStream(ws, active, message.id, built, settingsCtx.provider, settingsCtx.providerOpts);
       return;
     }
     case "act": {
@@ -156,7 +218,7 @@ function handleMessage(
         text: message.text,
         params: message.params,
       });
-      void runStream(ws, active, message.id, built);
+      void runStream(ws, active, message.id, built, settingsCtx.provider, settingsCtx.providerOpts);
       return;
     }
     case "prompts.list": {
@@ -177,6 +239,19 @@ function handleMessage(
     }
     case "cancel": {
       active.get(message.target)?.abort();
+      return;
+    }
+    case "settings.get": {
+      void buildSettingsPayload(settingsCtx.getConfig()).then((payload) => {
+        send(ws, { type: "settings", id: message.id, ...payload });
+      });
+      return;
+    }
+    case "settings.set": {
+      const updated = settingsCtx.applySettings({ provider: message.provider, model: message.model });
+      void buildSettingsPayload(updated).then((payload) => {
+        send(ws, { type: "settings", id: message.id, ...payload });
+      });
       return;
     }
   }
@@ -204,12 +279,58 @@ function handleHandshakeMessage(
   send(ws, { type: "hello-ok", v: 1, models: ["claude"], capabilities: ["chat", "summarize"] });
 }
 
-export function startServer(config: WingpenConfig, pairingSecret: string, promptsDirs: PromptsDirs) {
+/** promptsDirs, widened with an optional configDir so startServer can persist
+ * settings.set to config.json. Optional and separate from PromptsDirs (rather
+ * than requiring the full config.Dirs shape) so every existing test call site
+ * passing a bare `{ dataDir }` keeps compiling — persistence is simply
+ * skipped (in-memory only) when configDir is omitted, which is exactly what
+ * those tests want since none of them exercise settings.set. */
+export interface ServerDirs extends PromptsDirs {
+  configDir?: string;
+}
+
+export function startServer(config: WingpenConfig, pairingSecret: string, dirs: ServerDirs) {
+  const promptsDirs: PromptsDirs = { dataDir: dirs.dataDir };
+
+  // Config is process-wide for the lifetime of this server instance — one
+  // broker serves one user, so there is no per-connection config. Defaults
+  // are merged in here (not just in config.ts's loadConfig) so a caller that
+  // constructs a WingpenConfig literal directly — every existing test does —
+  // doesn't have to know about provider/ollamaUrl to keep working.
+  let currentConfig: WingpenConfig = {
+    provider: DEFAULT_CONFIG.provider,
+    ollamaUrl: DEFAULT_CONFIG.ollamaUrl,
+    ...config,
+  };
+
+  function settingsCtx(): SettingsCtx {
+    const cfg = currentConfig;
+    return {
+      provider: getProvider(cfg.provider) ?? getProvider(DEFAULT_CONFIG.provider)!,
+      providerOpts: { model: cfg.model, ollamaUrl: cfg.ollamaUrl },
+      getConfig: () => currentConfig,
+      applySettings(patch) {
+        if (patch.provider !== undefined) currentConfig = { ...currentConfig, provider: patch.provider };
+        if (patch.model !== undefined) currentConfig = { ...currentConfig, model: patch.model };
+        if (dirs.configDir) saveConfig({ configDir: dirs.configDir }, currentConfig);
+        return currentConfig;
+      },
+    };
+  }
+
   return Bun.serve<ConnData, {}>({
     hostname: "127.0.0.1", // NEVER 0.0.0.0 — see CLAUDE.md non-negotiable rule #2.
     port: config.port,
     fetch(req, server) {
       const url = new URL(req.url);
+      if (req.method === "GET" && url.pathname === "/pair") {
+        const html = renderPairPage({
+          port: config.port,
+          extensionIds: config.allowedExtensionIds,
+          token: pairingSecret,
+        });
+        return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+      }
       if (url.pathname !== "/ws") {
         return new Response("not found", { status: 404 });
       }
@@ -245,7 +366,7 @@ export function startServer(config: WingpenConfig, pairingSecret: string, prompt
           }
           return;
         }
-        handleMessage(ws, result.message, ws.data.active, promptsDirs);
+        handleMessage(ws, result.message, ws.data.active, promptsDirs, settingsCtx());
       },
       close(ws) {
         if (ws.data.helloTimer) clearTimeout(ws.data.helloTimer);
@@ -261,7 +382,9 @@ if (import.meta.main) {
   const config = loadConfig(dirs);
   const port = Number(process.env.WINGPEN_PORT) || config.port;
   const pairingSecret = loadOrCreatePairingSecret(dirs);
-  const promptsDirs: PromptsDirs = { dataDir: dirs.dataDir };
-  const server = startServer({ ...config, port }, pairingSecret, promptsDirs);
+  const server = startServer({ ...config, port }, pairingSecret, {
+    dataDir: dirs.dataDir,
+    configDir: dirs.configDir,
+  });
   console.log(`wingpen-broker listening on ws://127.0.0.1:${server.port}/ws`);
 }

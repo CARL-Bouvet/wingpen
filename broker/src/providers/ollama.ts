@@ -15,7 +15,7 @@ import {
   type BuiltPrompt,
   type StreamAnswerOptions,
 } from "../model.ts";
-import type { Availability, ModelProvider, ProviderRuntimeOptions } from "./types.ts";
+import type { Availability, ModelProvider, ProviderRuntimeOptions, StatusCheck } from "./types.ts";
 
 // Testing seam: production code always drives the real global `fetch`. Tests
 // substitute a fake here so the NDJSON-parsing and availability paths can be
@@ -81,6 +81,35 @@ async function isAvailable(opts: ProviderRuntimeOptions): Promise<Availability> 
 
 async function listModels(opts: ProviderRuntimeOptions): Promise<string[]> {
   return fetchModelNames(resolveBaseUrl(opts.ollamaUrl));
+}
+
+/**
+ * `provider.status` for ollama — amendement 2026-09-25: `/api/tags` is local
+ * and free, so this is the same 1.5s-bounded probe as isAvailable(), reported
+ * through the closed reason-code set the spec defines: `ollama-unreachable`,
+ * `model-missing` (a configured model isn't installed), `no-model-installed`
+ * (no model configured AND the daemon has none installed either), else
+ * `ready`.
+ */
+async function checkStatus(opts: ProviderRuntimeOptions): Promise<StatusCheck> {
+  const baseUrl = resolveBaseUrl(opts.ollamaUrl);
+  let names: string[];
+  try {
+    names = await fetchModelNames(baseUrl);
+  } catch {
+    return { state: "ko", reason: "ollama-unreachable" };
+  }
+  const model = opts.model?.trim();
+  if (model) {
+    if (!names.some((name) => matchesModel(name, model))) {
+      return { state: "ko", reason: "model-missing" };
+    }
+    return { state: "ok", reason: "ready" };
+  }
+  if (names.length === 0) {
+    return { state: "ko", reason: "no-model-installed" };
+  }
+  return { state: "ok", reason: "ready" };
 }
 
 /** Parses one line of an Ollama /api/chat NDJSON stream into zero or more
@@ -229,5 +258,6 @@ export const ollamaProvider: ModelProvider = {
   label: "Ollama (local)",
   isAvailable,
   listModels,
+  checkStatus,
   streamAnswer,
 };

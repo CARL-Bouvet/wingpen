@@ -1,15 +1,14 @@
-// Renders the broker's self-served pairing page (GET /pair, see
-// docs/PROTOCOL.md "Appairage en un clic"). This page is served by the
+// Renders the broker's self-served pairing page — GET /pair, Firefox only,
+// see docs/PROTOCOL.md "Page `/pair` (Firefox seulement)" (amendement
+// 2026-09-25, replaces "Appairage en un clic"). This page is served by the
 // broker over plain HTTP to 127.0.0.1 — it is NOT an extension page, so the
 // extension's CSP (manifest.json, content_security_policy) does not apply to
-// it. An inline <style> and <script> block is acceptable here for that
-// reason; nowhere else in this codebase.
-//
-// Everything server-controlled (pairing token, extension id, port) is
-// injected below. Nothing here comes from the request — there is no user
-// input to this page — but both the token and the configured extension id
-// come from files an admin could hand-edit (config.json, pairing.txt), so
-// they are escaped exactly as if they were untrusted, defense in depth.
+// it. An inline <style> block is acceptable here for that reason; nowhere
+// else in this codebase. NO <script>, NO button, NO extension id: this page
+// only ever displays the permanent secret (to copy by hand into the Firefox
+// extension's options page) and the read-only list of already-pinned uuids.
+// Response headers (Cache-Control, CSP, etc.) are set by the caller
+// (server.ts) — this module only builds the HTML body.
 
 function escapeHtml(value: string): string {
   return value
@@ -20,78 +19,60 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-// Embeds a string as a JS string literal inside an inline <script> block.
-// JSON.stringify handles quote/backslash escaping; the extra `<`/`>` escape
-// blocks a "</script>" (or "<script>") breakout even though neither the
-// token (hex) nor a well-formed extension id (a-p) can normally contain one.
-function jsStringLiteral(value: string): string {
-  return JSON.stringify(value).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
+export interface PinnedUuidView {
+  uuid: string;
+  pinnedAt: string;
+  lastSeen: string;
 }
 
 export interface PairPageOptions {
   /** Port the broker is actually listening on. */
   port: number;
-  /** Every allowed extension id. The page tries them in order and keeps the
-   * first that answers — a config file usually carries stale ids from earlier
-   * unpacked loads, and targeting only the first one pairs with a ghost. */
-  extensionIds: string[];
-  /** The pairing secret (docs/PROTOCOL.md handshake step 2). */
+  /** The pairing secret (docs/PROTOCOL.md handshake step 2) — permanent, not
+   * a session token. Displayed for the user to copy by hand. */
   token: string;
+  /** Read-only view of the currently pinned Firefox uuids, most-recently
+   * pinned first. */
+  pinned: PinnedUuidView[];
+  /** Absolute path of firefox-extension-uuids.txt, shown so the user knows
+   * where to revoke a pin by hand. */
+  pinsFilePath: string;
 }
 
-export function renderPairPage({ port, extensionIds, token }: PairPageOptions): string {
-  if (!extensionIds || extensionIds.length === 0) {
-    // No allowedExtensionIds configured — nothing to pair with. Say so rather
-    // than rendering a button that can only ever fail.
-    return renderErrorPage(
-      "Aucune extension autorisée n'est configurée sur ce broker (allowedExtensionIds est vide dans config.json). Rien à appairer.",
-    );
-  }
-
+export function renderPairPage({ port, token, pinned, pinsFilePath }: PairPageOptions): string {
   const safeToken = escapeHtml(token);
-  const tokenLiteral = jsStringLiteral(token);
-  const extensionIdsLiteral = `[${extensionIds.map(jsStringLiteral).join(",")}]`;
   const safePort = escapeHtml(String(port));
+  const safePinsFilePath = escapeHtml(pinsFilePath);
+
+  const pinnedRows = pinned.length
+    ? pinned
+        .map(
+          (p) =>
+            `      <tr><td><code>${escapeHtml(p.uuid)}</code></td><td>${escapeHtml(p.pinnedAt)}</td><td>${escapeHtml(p.lastSeen)}</td></tr>`,
+        )
+        .join("\n")
+    : `      <tr><td colspan="3"><em>Aucune extension Firefox épinglée pour l'instant.</em></td></tr>`;
 
   return `<!DOCTYPE html>
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Connecter Wingpen</title>
+<title>Connecter Wingpen (Firefox)</title>
 <style>
   * { box-sizing: border-box; }
   body {
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-    max-width: 480px;
+    max-width: 560px;
     margin: 48px auto;
     padding: 0 16px;
     color: #1f2430;
     line-height: 1.5;
   }
   h1 { font-size: 20px; }
+  h2 { font-size: 15px; margin-top: 32px; }
   p.help { color: #555; }
-  button {
-    border: none;
-    background: #3b5cf6;
-    color: #fff;
-    padding: 10px 20px;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 14px;
-  }
-  button:hover { background: #2d4be0; }
-  button:disabled { background: #9aa4c4; cursor: default; }
-  #result { min-height: 1.5em; font-weight: 600; }
-  #result.ok { color: #1a8a4a; }
-  #result.err { color: #b0332f; }
-  details {
-    margin-top: 24px;
-    border: 1px solid #d8d8de;
-    border-radius: 8px;
-    padding: 12px 16px;
-  }
-  code {
+  code, pre {
     display: block;
     margin-top: 8px;
     padding: 8px;
@@ -99,93 +80,39 @@ export function renderPairPage({ port, extensionIds, token }: PairPageOptions): 
     border-radius: 6px;
     word-break: break-all;
     font-size: 13px;
+    user-select: all;
   }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e0e0e6; }
+  th { color: #555; font-weight: 600; }
 </style>
 </head>
 <body>
-  <h1>Connecter Wingpen</h1>
+  <h1>Connecter Wingpen — Firefox</h1>
   <p class="help">
-    Cette page va transmettre le jeton de pairage à l'extension Wingpen installée
-    dans ce navigateur, pour qu'elle se connecte au broker qui tourne sur cette
-    machine (127.0.0.1:${safePort}). Rien n'est envoyé ailleurs.
+    Cette page ne sert qu'à épingler une extension Wingpen pour Firefox sur le broker qui tourne
+    sur cette machine (127.0.0.1:${safePort}). Sous Chromium, cette page n'est pas nécessaire :
+    l'extension s'appaire seule.
   </p>
-  <p>
-    <button id="connect" type="button">Connecter Wingpen</button>
+
+  <h2>Secret permanent</h2>
+  <p class="help">
+    Copiez ce secret, puis collez-le dans les options de l'extension Wingpen (Firefox) pour
+    l'épingler. Ce geste n'est nécessaire qu'une fois par installation.
   </p>
-  <p id="result" role="status"></p>
-  <details id="fallback" hidden>
-    <summary>La connexion automatique n'a pas fonctionné — copier le jeton manuellement</summary>
-    <p>Ouvrez les réglages de l'extension Wingpen (clic droit sur son icône → Options) et collez ce jeton :</p>
-    <code id="tokenFallback">${safeToken}</code>
-  </details>
-  <script>
-  (function () {
-    var EXTENSION_IDS = ${extensionIdsLiteral};
-    var TOKEN = ${tokenLiteral};
-    var btn = document.getElementById("connect");
-    var result = document.getElementById("result");
-    var fallback = document.getElementById("fallback");
+  <code>${safeToken}</code>
 
-    function showFallback(reason) {
-      result.textContent = "\u00c9chec : " + reason;
-      result.className = "err";
-      btn.disabled = false;
-      fallback.hidden = false;
-    }
-
-    btn.addEventListener("click", function () {
-      btn.disabled = true;
-      result.textContent = "Connexion\u2026";
-      result.className = "";
-
-      if (!window.chrome || !chrome.runtime || !chrome.runtime.sendMessage) {
-        showFallback("l'extension Wingpen n'est pas installée dans ce navigateur.");
-        return;
-      }
-
-      // Try every allowed id in turn: only one of them is the extension that is
-      // actually installed, and it is not necessarily the first in config.json.
-      var lastReason = "l'extension Wingpen n'a pas répondu (installée ? bon identifiant ?).";
-      function tryId(i) {
-        if (i >= EXTENSION_IDS.length) {
-          showFallback(lastReason);
-          return;
-        }
-        try {
-          chrome.runtime.sendMessage(EXTENSION_IDS[i], { type: "wingpen:pair", token: TOKEN }, function (response) {
-            if (chrome.runtime.lastError || !response || response.ok !== true) {
-              lastReason =
-                (chrome.runtime.lastError && chrome.runtime.lastError.message) ||
-                (response && response.reason) ||
-                lastReason;
-              tryId(i + 1);
-              return;
-            }
-            result.textContent = "Connecté. Vous pouvez fermer cet onglet.";
-            result.className = "ok";
-            btn.hidden = true;
-          });
-        } catch (err) {
-          lastReason = err && err.message ? err.message : String(err);
-          tryId(i + 1);
-        }
-      }
-      tryId(0);
-    });
-  })();
-  </script>
-</body>
-</html>
-`;
-}
-
-function renderErrorPage(message: string): string {
-  return `<!DOCTYPE html>
-<html lang="fr">
-<head><meta charset="UTF-8"><title>Connecter Wingpen</title></head>
-<body>
-  <h1>Connecter Wingpen</h1>
-  <p>${escapeHtml(message)}</p>
+  <h2>Extensions Firefox épinglées</h2>
+  <p class="help">
+    Liste en lecture seule. Pour révoquer un épinglage, supprimez sa ligne dans
+    <code style="display:inline;padding:2px 4px;">${safePinsFilePath}</code> à la main.
+  </p>
+  <table>
+    <thead><tr><th>uuid</th><th>épinglé le</th><th>vu le</th></tr></thead>
+    <tbody>
+${pinnedRows}
+    </tbody>
+  </table>
 </body>
 </html>
 `;

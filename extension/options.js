@@ -3,6 +3,8 @@
 // The token is a secret: it MUST live in chrome.storage.session (wiped when
 // the browser closes), never chrome.storage.local (unencrypted on disk).
 
+import { api } from "./lib/browser-compat.js";
+
 const RETENTION_DAYS_KEY = "wingpen:retentionDays"; // number of days, or null for "jamais"
 const DEFAULT_RETENTION_DAYS = 30;
 
@@ -27,22 +29,48 @@ const els = {
   modelSave: document.getElementById("modelSave"),
 };
 
+// One-line French descriptions, understandable by a non-developer (task
+// brief, deliverable D2). Keyed by provider id — `settings.available` is
+// broker-driven, this is purely cosmetic and never gates behaviour.
+const PROVIDER_DESCRIPTIONS = {
+  "claude-api": "Votre propre clé Anthropic, facturée sur votre compte.",
+  ollama: "Un modèle qui tourne sur votre machine : rien n'en sort.",
+  "claude-cli": "Votre installation Claude Code locale — chemin réservé aux profils techniques.",
+};
+
+// "settings.test" is fire-and-forget per provider (deliverable D2) — these
+// track in-flight state and the DOM nodes to update when the matching
+// "settings.test-result" comes back, since that reply does not itself
+// trigger a full renderModelSection() re-render (only a fresh "settings"
+// message does, see requestSettings()/setProvider()).
+const testingProviders = new Set();
+const testButtonsByProvider = new Map();
+const testResultsByProvider = new Map();
+
 init();
 
 async function init() {
-  const { pairingToken } = await chrome.storage.session.get("pairingToken");
-  if (pairingToken) els.token.value = pairingToken;
+  // docs/PROTOCOL.md "Collage (options, Firefox)": write-only field, never
+  // pre-filled with the token/secret in memory — nothing read from
+  // chrome.storage.session here.
 
-  const data = await chrome.storage.local.get(RETENTION_DAYS_KEY);
+  const data = await api.storage.local.get(RETENTION_DAYS_KEY);
   const stored = data[RETENTION_DAYS_KEY];
   const retentionDays = stored === null || typeof stored === "number" ? stored : DEFAULT_RETENTION_DAYS;
   els.retention.value = retentionDays === null ? "never" : String(retentionDays);
 
-  els.save.addEventListener("click", save);
+  els.save.addEventListener("click", () => applyToken(els.token.value.trim()));
+  // The spec's primary flow is a paste (Firefox: the /pair secret; Chromium
+  // never needs this field at all). Read the value on the next tick — the
+  // "paste" event fires before the input's own value is updated — and apply
+  // it right away, without waiting for a click on "Enregistrer".
+  els.token.addEventListener("paste", () => {
+    setTimeout(() => applyToken(els.token.value.trim()), 0);
+  });
   els.retention.addEventListener("change", saveRetention);
   els.modelSelect.addEventListener("change", () => setProvider(undefined, els.modelSelect.value));
   els.modelSave.addEventListener("click", () => setProvider(undefined, els.modelInput.value.trim()));
-  chrome.runtime.onMessage.addListener((message) => {
+  api.runtime.onMessage.addListener((message) => {
     if (message?.type === "wingpen:status") applyStatus(message.state);
     if (message?.type === "wingpen:hello-ok") {
       applyStatus("connected");
@@ -52,31 +80,41 @@ async function init() {
     if (message?.type === "wingpen:broker-message" && message.message?.type === "settings") {
       renderModelSection(message.message);
     }
+    if (message?.type === "wingpen:broker-message" && message.message?.type === "settings.test-result") {
+      applyTestResult(message.message);
+    }
   });
 
-  const status = await chrome.runtime.sendMessage({ type: "wingpen:get-status" }).catch(() => null);
+  const status = await api.runtime.sendMessage({ type: "wingpen:get-status" }).catch(() => null);
   applyStatus(status?.state ?? "unknown");
   if (status?.state === "connected") requestSettings();
 
   await renderSiteToggles();
-  chrome.permissions.onAdded.addListener(renderSiteToggles);
-  chrome.permissions.onRemoved.addListener(renderSiteToggles);
+  api.permissions.onAdded.addListener(renderSiteToggles);
+  api.permissions.onRemoved.addListener(renderSiteToggles);
 }
 
 function newId() {
   return `opt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-async function save() {
-  const value = els.token.value.trim();
-  await chrome.storage.session.set({ pairingToken: value });
-  await chrome.runtime.sendMessage({ type: "wingpen:panel-ready" }).catch(() => null);
+// docs/PROTOCOL.md "Collage (options, Firefox)": a non-empty value is stored
+// and reconnects immediately (cancelling any backoff in progress); an empty
+// value clears the stored token instead of storing "". Delegated to the
+// service worker (message "wingpen:set-token") rather than writing
+// chrome.storage.session directly here, so the same force-reconnect path
+// always runs right after — see service-worker.js.
+async function applyToken(value) {
+  await api.runtime.sendMessage({ type: "wingpen:set-token", token: value }).catch(() => null);
+  // I4 (lot7 security review): clear the field once applied — nothing left
+  // sitting visible/selectable in the DOM after the secret has done its job.
+  els.token.value = "";
 }
 
 async function saveRetention() {
   const raw = els.retention.value;
   const retentionDays = raw === "never" ? null : Number(raw);
-  await chrome.storage.local.set({ [RETENTION_DAYS_KEY]: retentionDays });
+  await api.storage.local.set({ [RETENTION_DAYS_KEY]: retentionDays });
 }
 
 function applyStatus(state) {
@@ -102,7 +140,7 @@ function applyStatus(state) {
 // "Fournisseur de modèle") ----------------------------------------------
 
 function requestSettings() {
-  chrome.runtime.sendMessage({
+  api.runtime.sendMessage({
     type: "wingpen:client-message",
     payload: { type: "settings.get", id: newId() },
   });
@@ -112,7 +150,52 @@ function setProvider(provider, model) {
   const payload = { type: "settings.set", id: newId() };
   if (provider !== undefined) payload.provider = provider;
   if (model !== undefined) payload.model = model;
-  chrome.runtime.sendMessage({ type: "wingpen:client-message", payload });
+  api.runtime.sendMessage({ type: "wingpen:client-message", payload });
+}
+
+// Write-only: the broker stores `apiKey` and never returns it (contract with
+// the backend worker implementing settings.set). An empty string means
+// "forget the stored key" — see the "Effacer la clé" button below. The key
+// must never touch chrome.storage or the console — it goes straight into
+// this one runtime.sendMessage call.
+function setApiKey(apiKey) {
+  api.runtime.sendMessage({
+    type: "wingpen:client-message",
+    payload: { type: "settings.set", id: newId(), apiKey },
+  });
+}
+
+function testProvider(providerId) {
+  if (testingProviders.has(providerId)) return;
+  testingProviders.add(providerId);
+  const button = testButtonsByProvider.get(providerId);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Test en cours…";
+  }
+  const result = testResultsByProvider.get(providerId);
+  if (result) {
+    result.textContent = "";
+    result.className = "test-result";
+  }
+  api.runtime.sendMessage({
+    type: "wingpen:client-message",
+    payload: { type: "settings.test", id: newId(), provider: providerId },
+  });
+}
+
+function applyTestResult(message) {
+  testingProviders.delete(message.provider);
+  const button = testButtonsByProvider.get(message.provider);
+  if (button) {
+    button.disabled = false;
+    button.textContent = "Tester la connexion";
+  }
+  const result = testResultsByProvider.get(message.provider);
+  if (result) {
+    result.textContent = message.message || (message.ok ? "OK" : "Échec");
+    result.className = `test-result ${message.ok ? "test-result--ok" : "test-result--error"}`;
+  }
 }
 
 /** Renders the provider radio list + model field from the broker's latest
@@ -123,6 +206,8 @@ function setProvider(provider, model) {
 function renderModelSection(settings) {
   els.modelDisconnected.hidden = settings !== null;
   clearChildren(els.providerList);
+  testButtonsByProvider.clear();
+  testResultsByProvider.clear();
 
   if (!settings) {
     els.modelField.hidden = true;
@@ -151,6 +236,18 @@ function renderModelSection(settings) {
     label.appendChild(name);
     item.appendChild(label);
 
+    const description = document.createElement("p");
+    description.className = "provider-description";
+    description.textContent = PROVIDER_DESCRIPTIONS[provider.id] ?? "";
+    item.appendChild(description);
+
+    if (provider.configured) {
+      const configured = document.createElement("span");
+      configured.className = "provider-configured";
+      configured.textContent = provider.id === "claude-api" ? "clé enregistrée" : "configuré";
+      item.appendChild(configured);
+    }
+
     if (!provider.available && provider.reason) {
       const reason = document.createElement("span");
       reason.className = "provider-reason";
@@ -158,10 +255,76 @@ function renderModelSection(settings) {
       item.appendChild(reason);
     }
 
+    if (provider.id === "claude-api") {
+      item.appendChild(buildApiKeyField());
+    }
+
+    item.appendChild(buildTestRow(provider.id));
+
     els.providerList.appendChild(item);
   }
 
   renderModelField(settings);
+}
+
+/** Password field + Enregistrer/Effacer for the `claude-api` provider
+ * (deliverable D2). The field starts empty on every load and after every
+ * save — the broker never echoes the key back (write-only by contract), so
+ * there is nothing to prefill it with. */
+function buildApiKeyField() {
+  const wrap = document.createElement("div");
+  wrap.className = "apikey-field";
+
+  const input = document.createElement("input");
+  input.type = "password";
+  input.autocomplete = "off";
+  input.placeholder = "Clé API Anthropic (sk-ant-…)";
+
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.textContent = "Enregistrer";
+  saveBtn.addEventListener("click", () => {
+    const value = input.value.trim();
+    if (!value) return;
+    setApiKey(value);
+    input.value = "";
+  });
+
+  const clearBtn = document.createElement("button");
+  clearBtn.type = "button";
+  clearBtn.className = "apikey-clear";
+  clearBtn.textContent = "Effacer la clé";
+  clearBtn.addEventListener("click", () => {
+    setApiKey("");
+    input.value = "";
+  });
+
+  wrap.appendChild(input);
+  wrap.appendChild(saveBtn);
+  wrap.appendChild(clearBtn);
+  return wrap;
+}
+
+/** "Tester la connexion" button + result line, shared by all three
+ * providers (deliverable D2). */
+function buildTestRow(providerId) {
+  const row = document.createElement("div");
+  row.className = "test-row";
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "test-button";
+  button.textContent = "Tester la connexion";
+  button.addEventListener("click", () => testProvider(providerId));
+  testButtonsByProvider.set(providerId, button);
+
+  const result = document.createElement("span");
+  result.className = "test-result";
+  testResultsByProvider.set(providerId, result);
+
+  row.appendChild(button);
+  row.appendChild(result);
+  return row;
 }
 
 function renderModelField(settings) {
@@ -212,7 +375,7 @@ function clearChildren(node) {
 }
 
 async function renderSiteToggles() {
-  const granted = await chrome.permissions.getAll();
+  const granted = await api.permissions.getAll();
   const grantedOrigins = (granted.origins ?? []).filter(
     (origin) => origin.startsWith("http://") || origin.startsWith("https://"),
   );
@@ -243,10 +406,10 @@ async function onSiteToggleChange(pattern, checkbox) {
   checkbox.disabled = true;
   try {
     if (checkbox.checked) {
-      const granted = await chrome.permissions.request({ origins: [pattern] }).catch(() => false);
+      const granted = await api.permissions.request({ origins: [pattern] }).catch(() => false);
       if (!granted) checkbox.checked = false;
     } else {
-      await chrome.permissions.remove({ origins: [pattern] }).catch(() => false);
+      await api.permissions.remove({ origins: [pattern] }).catch(() => false);
     }
   } finally {
     // Re-render from chrome.permissions.getAll() rather than trusting the

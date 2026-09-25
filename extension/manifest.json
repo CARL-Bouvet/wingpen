@@ -11,11 +11,8 @@
   },
   "permissions": ["sidePanel", "activeTab", "storage", "scripting", "alarms", "contextMenus"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
-  "externally_connectable": {
-    "matches": ["http://127.0.0.1:8787/*"]
-  },
   "content_security_policy": {
-    "extension_pages": "default-src 'self'; connect-src ws://127.0.0.1:8787; img-src 'self'; style-src 'self'"
+    "extension_pages": "default-src 'self'; connect-src ws://127.0.0.1:8787 'self'; img-src 'self'; style-src 'self'"
   },
   "background": {
     "service_worker": "background/service-worker.js",

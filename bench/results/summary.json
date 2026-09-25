@@ -1,0 +1,166 @@
+{
+  "generatedAt": "2026-09-24T23:22:21.074Z",
+  "brave-ws": {
+    "status": "blocked",
+    "reason": "headless launch failed: rave-Browser/Crash Reports/settings.dat: Système de fichiers accessible en lecture seulement (30)\n[31:31:0925/012203.056630:FATAL:chrome/browser/process_singleton_posix.cc:297] Check failed: . socket() failed: Opération non permise (1)\n[0925/012203.061135:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:208] open /home/romain/.config/BraveSoftware/Brave-Browser/Crash Reports/settings.dat: Read-only file system (30)\n[0925/012203.061207:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:153] open /home/romain/.config/BraveSoftware/Brave-Browser/Crash Reports/new/18a9bea7-d935-4afb-9369-95929b25523d.dmp: Read-only file system (30)\n[0925/012203.061216:ERROR:third_party/crashpad/crashpad/handler/linux/crash_report_exception_handler.cc:209] PrepareNewCrashReport failed\n"
+  },
+  "brave-nm": {
+    "status": "blocked",
+    "reason": "brave process exited before startup margin elapsed (headless launch failure)"
+  },
+  "firefox-ws": {
+    "status": "ok",
+    "coldConnectMs": {
+      "p50": 2,
+      "p95": 11,
+      "min": 1,
+      "max": 11
+    },
+    "roundTrip": {
+      "runs": 3,
+      "p50PerRunMs": [
+        1,
+        0,
+        1
+      ],
+      "p95PerRunMs": [
+        2,
+        1,
+        1
+      ],
+      "p99PerRunMs": [
+        2,
+        2,
+        2
+      ]
+    },
+    "streaming": [
+      {
+        "elapsedMs": 145,
+        "throughputBytesPerSec": 2068965.5172413795
+      },
+      {
+        "elapsedMs": 160,
+        "throughputBytesPerSec": 1875000
+      },
+      {
+        "elapsedMs": 158,
+        "throughputBytesPerSec": 1898734.17721519
+      }
+    ],
+    "uploadMs": [
+      6,
+      6,
+      6,
+      6,
+      5
+    ],
+    "uploadErrors": [],
+    "idle": {
+      "status": "pending",
+      "startedAt": "2026-09-24T22:57:36.529Z"
+    },
+    "cpuRssDuringRoundTrip": [
+      {
+        "samples": 9,
+        "pcpuAvg": 1.4000000000000001,
+        "pcpuMax": 2.3,
+        "rssKbAvg": 34281.333333333336,
+        "rssKbMax": 35396
+      },
+      {
+        "samples": 4,
+        "pcpuAvg": 2.85,
+        "pcpuMax": 3,
+        "rssKbAvg": 35660,
+        "rssKbMax": 35792
+      },
+      {
+        "samples": 8,
+        "pcpuAvg": 3.8625,
+        "pcpuMax": 4.5,
+        "rssKbAvg": 35911,
+        "rssKbMax": 36264
+      }
+    ],
+    "errors": []
+  },
+  "firefox-nm": {
+    "status": "ok",
+    "coldConnectMs": {
+      "p50": 25,
+      "p95": 42,
+      "min": 23,
+      "max": 42
+    },
+    "roundTrip": {
+      "runs": 3,
+      "p50PerRunMs": [
+        0,
+        0,
+        0
+      ],
+      "p95PerRunMs": [
+        1,
+        1,
+        1
+      ],
+      "p99PerRunMs": [
+        2,
+        2,
+        2
+      ]
+    },
+    "streaming": [
+      {
+        "elapsedMs": 307,
+        "throughputBytesPerSec": 977198.6970684039
+      },
+      {
+        "elapsedMs": 263,
+        "throughputBytesPerSec": 1140684.4106463878
+      },
+      {
+        "elapsedMs": 277,
+        "throughputBytesPerSec": 1083032.4909747292
+      }
+    ],
+    "uploadMs": [
+      32,
+      15,
+      15,
+      14,
+      17
+    ],
+    "uploadErrors": [],
+    "idle": {
+      "status": "survived",
+      "pingElapsedMs": 7,
+      "serviceWorkerSurvivedInProcess": true
+    },
+    "cpuRssDuringRoundTrip": [
+      {
+        "samples": 4,
+        "pcpuAvg": 15.875,
+        "pcpuMax": 20,
+        "rssKbAvg": 33251,
+        "rssKbMax": 35388
+      },
+      {
+        "samples": 4,
+        "pcpuAvg": 30.9,
+        "pcpuMax": 50,
+        "rssKbAvg": 33150,
+        "rssKbMax": 35368
+      },
+      {
+        "samples": 3,
+        "pcpuAvg": 17.333333333333332,
+        "pcpuMax": 20,
+        "rssKbAvg": 32510.666666666668,
+        "rssKbMax": 34796
+      }
+    ],
+    "errors": []
+  }
+}

@@ -77,3 +77,56 @@ Deux cibles existent. Le reste est du folklore sympathique.
   fournie par le navigateur.
 
 Wingpen a exactement ces quatre-là, plus le broker. Le détail est dans `docs/ARCHITECTURE.md`.
+
+## La messagerie native (Native Messaging)
+
+Une extension ne peut pas lancer un programme de l'ordinateur. La messagerie native est la seule
+porte officielle : l'extension appelle `chrome.runtime.connectNative("app.wingpen.broker")`, et
+c'est **le navigateur** qui démarre le programme correspondant et branche son entrée et sa sortie
+standard sur l'extension. Aucun port réseau, aucune adresse, aucune page ne s'y intercale
+(https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging).
+
+**Comment le navigateur reconnaît l'extension.** Le programme se déclare dans un *manifeste
+d'hôte*, un petit JSON qui dit qui a le droit de l'appeler : `allowed_origins` sous Chromium, une
+liste exacte de `chrome-extension://<ID>/`, sans joker ; `allowed_extensions` sous Firefox, une
+liste d'ID gecko comme `wingpen@localhost`
+(https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Native_manifests). Une
+autre extension qui tente l'appel est refusée par le navigateur avant que le programme démarre.
+Le programme reçoit en argument l'identité de l'appelant : l'origine sous Chromium, le chemin du
+manifeste et l'ID sous Firefox. Il n'y a ni jeton ni en-tête `Origin` à falsifier. La limite du
+compte utilisateur reste la même : un programme de votre compte peut lancer ce binaire lui-même.
+
+**Le manifeste d'hôte** contient `name`, `description`, `path` (absolu sous Linux et macOS),
+`type: "stdio"` et la liste des appelants. Il se pose dans un dossier propre à chaque navigateur
+(`~/.config/google-chrome/NativeMessagingHosts/`, `~/.mozilla/native-messaging-hosts/`…) ; sous
+Windows, une clé de registre pointe vers le fichier. Un manifeste par famille de navigateurs.
+C'est l'application native qui le pose, jamais l'extension, qui n'a aucun accès au disque.
+
+**Le cadrage et le plafond.** Chaque message est du JSON en UTF-8, précédé de sa longueur sur
+4 octets, dans l'ordre d'octets de la machine. Un message du programme vers l'extension pèse
+**1 Mo au plus** ; dans l'autre sens, 64 Mio sous Chrome et 4 Go sous Firefox
+(https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Native_messaging). Une
+réponse de modèle envoyée par morceaux passe sans peine ; un gros message unique doit être découpé.
+
+**Le cycle de vie.** `connectNative` démarre **un** processus, qui vit tant que le port reste
+ouvert ; à la fermeture, le navigateur envoie SIGTERM puis SIGKILL (un *Job object* sous
+Windows). `sendNativeMessage` démarre un processus neuf à chaque appel. Le programme tourne dans
+le dossier de son exécutable, avec l'environnement du navigateur. Depuis Chrome 105, un port
+ouvert garde le service worker en vie, ce qui neutralise le piège n°1
+(https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle). Mesuré
+sous Firefox le 25/09 : un port ouvert a tenu 5 minutes d'inactivité
+(`docs/etudes/mesures-transport.md`, mesure 5).
+
+**Qui s'en sert.** KeePassXC, dont l'application écrit elle-même ses manifestes
+(https://gitlab.com/nonguix/nonguix/-/issues/368) ; Bitwarden et 1Password [À VÉRIFIER].
+
+**Les pièges.** Flatpak exige un script relais, Snap le portail XDG
+(https://bugzilla.mozilla.org/show_bug.cgi?id=1661935) ; sous Firefox, `nativeMessaging` en permission
+facultative échouait encore en version 90 (https://bugzilla.mozilla.org/show_bug.cgi?id=1630415).
+
+**Ce que ça retirerait de Wingpen** : le port 8787, la page `/pair`, le secret d'appairage et les
+jetons de session, les contrôles `Host`, UID et `Origin`, la liste d'uuid Firefox et son collage,
+et avec eux le *DNS rebinding*, l'usurpation du port et la dépendance à Local Network Access. En
+échange : un manifeste par navigateur, une clé de registre sous Windows, un avertissement à
+l'installation, le plafond d'1 Mo. Le choix entre un petit relais vers le broker existant et un
+broker lancé par le navigateur est discuté dans `docs/etudes/appairage.md` §4.

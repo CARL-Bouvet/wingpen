@@ -7,14 +7,22 @@ import {
   buildPrompt,
   streamAnswer,
   isModelUnavailableError,
+  isAuthRequiredError,
+  AuthRequiredError,
   ModelTimeoutError,
   __setQueryImplForTests,
   __resetQueryImplForTests,
 } from "../src/model.ts";
+import {
+  looksLikeAuthFailure,
+  __setExecFileImplForTests,
+  __resetExecFileImplForTests,
+} from "../src/providers/claude-cli.ts";
 import type { Context } from "../src/protocol.ts";
 
 afterEach(() => {
   __resetQueryImplForTests();
+  __resetExecFileImplForTests();
 });
 
 // Pulls the two fence markers out of a built prompt. Assumes the standard
@@ -241,5 +249,285 @@ describe("streamAnswer — timeout (item 3)", () => {
       caught = err;
     }
     expect(caught).not.toBeInstanceOf(ModelTimeoutError);
+  });
+});
+
+// --- streamAnswer: auth-required detection (task C3) ---
+
+describe("looksLikeAuthFailure (pure pattern matcher)", () => {
+  test("empty stderr is never an auth failure", () => {
+    expect(looksLikeAuthFailure("")).toBe(false);
+    expect(looksLikeAuthFailure("   ")).toBe(false);
+  });
+
+  test("matches the real CLI's known phrasings, case-insensitively", () => {
+    expect(looksLikeAuthFailure("Please run /login and sign in with your Claude.ai account.")).toBe(true);
+    expect(looksLikeAuthFailure("Invalid API key · Please run /login")).toBe(true);
+    expect(looksLikeAuthFailure("Your session has expired. Please run /login to sign in again.")).toBe(true);
+    expect(looksLikeAuthFailure("AUTHENTICATION_FAILED: token has expired")).toBe(true);
+  });
+
+  test("tolerant fallback: mentions login/session/auth without an exact phrase still counts", () => {
+    expect(looksLikeAuthFailure("Unexpected error while checking login state")).toBe(true);
+  });
+
+  test("an unrelated failure is not misclassified as auth-required", () => {
+    expect(looksLikeAuthFailure("ENOENT: no such file or directory")).toBe(false);
+    expect(looksLikeAuthFailure("connect ECONNREFUSED 127.0.0.1:11434")).toBe(false);
+  });
+});
+
+describe("streamAnswer — auth-required (item C3)", () => {
+  test("a process exit whose stderr says 'Please run /login' surfaces as AuthRequiredError", async () => {
+    __setQueryImplForTests(((params: { options?: { stderr?: (data: string) => void } }) => {
+      params.options?.stderr?.("Invalid API key · Please run /login\n");
+      async function* gen(): AsyncGenerator<FakeMessage, void> {
+        throw new Error("Claude Code process exited with code 1");
+      }
+      return gen();
+    }) as any);
+
+    const built = buildPrompt({ kind: "chat", text: "hello" });
+    const iterate = async () => {
+      for await (const _event of streamAnswer(built, { timeoutMs: 5000 })) {
+        // draining
+      }
+    };
+
+    await expect(iterate()).rejects.toBeInstanceOf(AuthRequiredError);
+    const err = await iterate().catch((e) => e);
+    expect(isAuthRequiredError(err)).toBe(true);
+    expect(isModelUnavailableError(err)).toBe(false);
+    // French, user-facing (sent verbatim as ErrorMessage.message).
+    expect(err.message).toMatch(/claude \/login/i);
+  });
+
+  test("a process exit with no stderr at all stays a generic (model-unavailable-classified) error", async () => {
+    // The seam must be set here: without it the probe spawns the real
+    // `claude auth status` and then a real, billed `claude -p ping`, which
+    // takes longer than this test's own timeout (notes/BUG_model_test_ts_c3_*).
+    // A logged-in session that answers the ping is the case under test: the
+    // probe confirms nothing, so the error must stay generic.
+    __setExecFileImplForTests(((_file: string, args: string[], _opts: unknown, cb: (...a: any[]) => void) => {
+      if (args[0] === "auth") cb(null, JSON.stringify({ loggedIn: true }), "");
+      else cb(null, "pong", "");
+    }) as any);
+
+    __setQueryImplForTests((() => {
+      async function* gen(): AsyncGenerator<FakeMessage, void> {
+        throw new Error("Claude Code process exited with code 1");
+      }
+      return gen();
+    }) as any);
+
+    const built = buildPrompt({ kind: "chat", text: "hello" });
+    const err = await (async () => {
+      try {
+        for await (const _event of streamAnswer(built, { timeoutMs: 5000 })) {
+          // draining
+        }
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(isAuthRequiredError(err)).toBe(false);
+    expect(isModelUnavailableError(err)).toBe(true);
+  });
+
+  test("a timeout is never misclassified as auth-required, even with unrelated stderr noise", async () => {
+    __setQueryImplForTests(((params: { options?: { abortController?: AbortController; stderr?: (d: string) => void } }) => {
+      params.options?.stderr?.("some unrelated diagnostic line\n");
+      const controller = params.options?.abortController;
+      async function* gen(): AsyncGenerator<FakeMessage, void> {
+        await new Promise<void>((_resolve, reject) => {
+          controller?.signal.addEventListener("abort", () => reject(new Error("aborted by test double")));
+        });
+      }
+      return gen();
+    }) as any);
+
+    const built = buildPrompt({ kind: "chat", text: "hello" });
+    const iterate = async () => {
+      for await (const _event of streamAnswer(built, { timeoutMs: 20 })) {
+        // draining
+      }
+    };
+    await expect(iterate()).rejects.toBeInstanceOf(ModelTimeoutError);
+  });
+});
+
+// --- streamAnswer: cancel never probes, and the probe is fully async
+// (lot7 security review, M1) --------------------------------------------
+
+describe("streamAnswer — cancel never triggers the auth probe (M1)", () => {
+  test("a user cancel (external abort) never calls execFile at all — no sync probe, no billed call", async () => {
+    const calls: string[][] = [];
+    __setExecFileImplForTests(((_file: string, args: string[], _opts: unknown, cb: (...a: any[]) => void) => {
+      calls.push(args);
+      cb(null, JSON.stringify({ loggedIn: true }));
+    }) as any);
+
+    const external = new AbortController();
+    __setQueryImplForTests(((params: { options?: { abortController?: AbortController } }) => {
+      const controller = params.options?.abortController;
+      async function* gen(): AsyncGenerator<FakeMessage, void> {
+        await new Promise<void>((_resolve, reject) => {
+          controller?.signal.addEventListener("abort", () => reject(new Error("aborted by user")));
+        });
+      }
+      return gen();
+    }) as any);
+
+    const built = buildPrompt({ kind: "chat", text: "hello" });
+    const iterate = async () => {
+      for await (const _event of streamAnswer(built, { signal: external.signal, timeoutMs: 5000 })) {
+        // draining
+      }
+    };
+    const promise = iterate();
+    external.abort();
+
+    let caught: unknown;
+    try {
+      await promise;
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).not.toBeInstanceOf(AuthRequiredError);
+    expect(calls.length).toBe(0);
+  });
+
+  test("checkStatus loggedIn:false confirms auth failure without ever running the billed '-p ping' probe", async () => {
+    const calls: string[][] = [];
+    __setExecFileImplForTests(((_file: string, args: string[], _opts: unknown, cb: (...a: any[]) => void) => {
+      calls.push(args);
+      cb(null, JSON.stringify({ loggedIn: false }));
+    }) as any);
+    __setQueryImplForTests((() => {
+      async function* gen(): AsyncGenerator<FakeMessage, void> {
+        throw new Error("Claude Code process exited with code 1");
+      }
+      return gen();
+    }) as any);
+
+    const built = buildPrompt({ kind: "chat", text: "hello" });
+    const err = await (async () => {
+      try {
+        for await (const _event of streamAnswer(built, { timeoutMs: 5000 })) {
+          // draining
+        }
+      } catch (e) {
+        return e;
+      }
+    })();
+
+    expect(isAuthRequiredError(err)).toBe(true);
+    expect(calls).toEqual([["auth", "status"]]);
+  });
+
+  test("checkStatus loggedIn:true falls back to the '-p ping' confirmation, async, and classifies its failure as auth-required", async () => {
+    const calls: string[][] = [];
+    __setExecFileImplForTests(((_file: string, args: string[], _opts: unknown, cb: (...a: any[]) => void) => {
+      calls.push(args);
+      if (args[0] === "auth") {
+        cb(null, JSON.stringify({ loggedIn: true }));
+      } else {
+        cb(new Error("boom"), "", "Please run /login to continue");
+      }
+    }) as any);
+    __setQueryImplForTests((() => {
+      async function* gen(): AsyncGenerator<FakeMessage, void> {
+        throw new Error("Claude Code process exited with code 1");
+      }
+      return gen();
+    }) as any);
+
+    const built = buildPrompt({ kind: "chat", text: "hello" });
+    const err = await (async () => {
+      try {
+        for await (const _event of streamAnswer(built, { timeoutMs: 5000 })) {
+          // draining
+        }
+      } catch (e) {
+        return e;
+      }
+    })();
+
+    expect(isAuthRequiredError(err)).toBe(true);
+    expect(calls.map((c) => c[0])).toEqual(["auth", "-p"]);
+  });
+
+  test("checkStatus loggedIn:true then a successful '-p ping' leaves the original (non-auth) error unchanged", async () => {
+    __setExecFileImplForTests(((_file: string, args: string[], _opts: unknown, cb: (...a: any[]) => void) => {
+      if (args[0] === "auth") {
+        cb(null, JSON.stringify({ loggedIn: true }));
+      } else {
+        cb(null, "pong", "");
+      }
+    }) as any);
+    __setQueryImplForTests((() => {
+      async function* gen(): AsyncGenerator<FakeMessage, void> {
+        throw new Error("Claude Code process exited with code 1");
+      }
+      return gen();
+    }) as any);
+
+    const built = buildPrompt({ kind: "chat", text: "hello" });
+    const err = await (async () => {
+      try {
+        for await (const _event of streamAnswer(built, { timeoutMs: 5000 })) {
+          // draining
+        }
+      } catch (e) {
+        return e;
+      }
+    })();
+
+    expect(isAuthRequiredError(err)).toBe(false);
+  });
+});
+
+// The summary's shape is a product decision (French, bullets, one takeaway,
+// timestamps on video) that lives in the prompt. These lock it in place, and
+// lock it OUTSIDE the fence — an instruction that drifted inside the markers
+// would be read as page data and ignored.
+describe("summarize instruction", () => {
+  const fence = (prompt: string, nonce: string) => ({
+    open: prompt.indexOf(`<<<wingpen-${nonce}`),
+    close: prompt.indexOf(`wingpen-${nonce}>>>`),
+  });
+
+  test("asks for French bullets and a takeaway line, below the fence", () => {
+    const context: Context = { kind: "page", text: "Some article text." };
+    const { prompt, nonce } = buildPrompt({ kind: "summarize", context, length: "medium" });
+    expect(prompt).toContain("IN FRENCH");
+    expect(prompt).toContain("6 à 8");
+    expect(prompt).toContain("À retenir : ");
+    const { close } = fence(prompt, nonce);
+    expect(prompt.indexOf("IN FRENCH")).toBeGreaterThan(close);
+  });
+
+  test("short length asks for fewer bullets", () => {
+    const context: Context = { kind: "page", text: "Some article text." };
+    const { prompt } = buildPrompt({ kind: "summarize", context, length: "short" });
+    expect(prompt).toContain("3 à 4");
+    expect(prompt).not.toContain("6 à 8");
+  });
+
+  test("a YouTube context asks for timestamps, a page context does not", () => {
+    const video = buildPrompt({
+      kind: "summarize",
+      context: { kind: "youtube", text: "0:12 hello", videoId: "abc" },
+      length: "medium",
+    }).prompt;
+    expect(video).toContain("[mm:ss]");
+    expect(video).toContain("never invented");
+
+    const page = buildPrompt({
+      kind: "summarize",
+      context: { kind: "page", text: "hello" },
+      length: "medium",
+    }).prompt;
+    expect(page).not.toContain("[mm:ss]");
   });
 });

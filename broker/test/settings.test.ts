@@ -11,7 +11,10 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer } from "../src/server.ts";
-import type { ServerMessage, SettingsMessage } from "../src/protocol.ts";
+import type { ServerMessage, SettingsMessage, SettingsTestResultMessage } from "../src/protocol.ts";
+import { __setFetchImplForTests as __setClaudeApiFetch, __resetFetchImplForTests as __resetClaudeApiFetch } from "../src/providers/claude-api.ts";
+import { __setFetchImplForTests as __setOllamaFetch, __resetFetchImplForTests as __resetOllamaFetch } from "../src/providers/ollama.ts";
+import { __setQueryImplForTests as __setClaudeCliQuery, __resetQueryImplForTests as __resetClaudeCliQuery } from "../src/providers/claude-cli.ts";
 
 const ALLOWED_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SECRET = "0123456789abcdef0123456789abcdef";
@@ -32,6 +35,9 @@ function boot(configDir?: string) {
 afterEach(() => {
   for (const s of servers) s.stop(true);
   servers = [];
+  __resetClaudeApiFetch();
+  __resetOllamaFetch();
+  __resetClaudeCliQuery();
 });
 
 async function connectAndAuth(server: ReturnType<typeof startServer>): Promise<WebSocket> {
@@ -73,11 +79,12 @@ describe("settings.get", () => {
     expect(msg.type).toBe("settings");
     expect(msg.id).toBe("s1");
     expect(msg.provider).toBe("claude-cli"); // untouched default
-    expect(msg.available).toHaveLength(2);
+    expect(msg.available).toHaveLength(3);
     const ids = msg.available.map((p) => p.id).sort();
-    expect(ids).toEqual(["claude-cli", "ollama"]);
+    expect(ids).toEqual(["claude-api", "claude-cli", "ollama"]);
     for (const status of msg.available) {
       expect(typeof status.available).toBe("boolean");
+      expect(typeof status.configured).toBe("boolean");
       if (!status.available) expect(typeof status.reason).toBe("string");
     }
     ws.close();
@@ -137,6 +144,297 @@ describe("settings.set", () => {
     const msg = (await nextMessage(ws)) as SettingsMessage;
     expect(msg.provider).toBe("claude-cli");
     expect(msg.model).toBe("llama3.2");
+    ws.close();
+  });
+});
+
+// --- apiKey: write-only end to end (task 2) ---------------------------------
+//
+// Security rule #1: no secret reaches the extension. A settings.set carrying
+// an apiKey must persist it (config.ts already writes config.json at 0600 —
+// unchanged here) but the wire reply — and every later settings.get — must
+// never contain it, under any key name.
+describe("settings.set — apiKey is write-only", () => {
+  test("a settings.set reply never echoes the apiKey, even as raw JSON", async () => {
+    const server = boot();
+    const ws = await connectAndAuth(server);
+    ws.send(JSON.stringify({ type: "settings.set", id: "k1", provider: "claude-api", apiKey: "sk-ant-super-secret" }));
+    const raw = await new Promise<string>((resolve) => {
+      const onMessage = (event: MessageEvent) => {
+        ws.removeEventListener("message", onMessage);
+        resolve(event.data as string);
+      };
+      ws.addEventListener("message", onMessage);
+    });
+    expect(raw).not.toContain("sk-ant-super-secret");
+    expect(raw).not.toContain("apiKey");
+    const msg = JSON.parse(raw) as SettingsMessage;
+    expect(msg.type).toBe("settings");
+    expect(msg.provider).toBe("claude-api");
+    ws.close();
+  });
+
+  test("a later settings.get on the same connection still never echoes it", async () => {
+    const server = boot();
+    const ws = await connectAndAuth(server);
+    ws.send(JSON.stringify({ type: "settings.set", id: "k2", apiKey: "sk-ant-another-secret" }));
+    await nextMessage(ws);
+    ws.send(JSON.stringify({ type: "settings.get", id: "k3" }));
+    const raw = await new Promise<string>((resolve) => {
+      const onMessage = (event: MessageEvent) => {
+        ws.removeEventListener("message", onMessage);
+        resolve(event.data as string);
+      };
+      ws.addEventListener("message", onMessage);
+    });
+    expect(raw).not.toContain("sk-ant-another-secret");
+    expect(raw).not.toContain("apiKey");
+    ws.close();
+  });
+
+  test("is persisted to config.json (0600) even though never echoed on the wire", async () => {
+    const configDir = mkdtempSync(join(tmpdir(), "wingpen-settings-apikey-"));
+    const server = boot(configDir);
+    const ws = await connectAndAuth(server);
+    ws.send(JSON.stringify({ type: "settings.set", id: "k4", provider: "claude-api", apiKey: "sk-ant-on-disk" }));
+    await nextMessage(ws);
+    ws.close();
+    const onDisk = JSON.parse(readFileSync(join(configDir, "config.json"), "utf8"));
+    expect(onDisk.apiKey).toBe("sk-ant-on-disk");
+  });
+
+  test("an empty-string apiKey forgets the previously stored key", async () => {
+    const configDir = mkdtempSync(join(tmpdir(), "wingpen-settings-apikey-forget-"));
+    const server = boot(configDir);
+    const ws = await connectAndAuth(server);
+    ws.send(JSON.stringify({ type: "settings.set", id: "k5", provider: "claude-api", apiKey: "sk-ant-to-forget" }));
+    await nextMessage(ws);
+    let onDisk = JSON.parse(readFileSync(join(configDir, "config.json"), "utf8"));
+    expect(onDisk.apiKey).toBe("sk-ant-to-forget");
+
+    ws.send(JSON.stringify({ type: "settings.set", id: "k6", apiKey: "" }));
+    await nextMessage(ws);
+    onDisk = JSON.parse(readFileSync(join(configDir, "config.json"), "utf8"));
+    expect(onDisk.apiKey).toBeUndefined();
+    ws.close();
+  });
+
+  test("rejects a non-string apiKey with bad-request", async () => {
+    const server = boot();
+    const ws = await connectAndAuth(server);
+    ws.send(JSON.stringify({ type: "settings.set", id: "k7", apiKey: 12345 }));
+    const msg = await nextMessage(ws);
+    expect(msg).toMatchObject({ type: "error", id: "k7", code: "bad-request" });
+    ws.close();
+  });
+
+  // I3 (lot7 security review): a malformed key must never reach config.json
+  // or providers/claude-api.ts's x-api-key header in the first place.
+  test("rejects an apiKey containing control characters with bad-request", async () => {
+    const server = boot();
+    const ws = await connectAndAuth(server);
+    ws.send(JSON.stringify({ type: "settings.set", id: "k8", apiKey: "sk-ant-\n-evil" }));
+    const msg = await nextMessage(ws);
+    expect(msg).toMatchObject({ type: "error", id: "k8", code: "bad-request" });
+    ws.close();
+  });
+
+  test("rejects an apiKey containing a space with bad-request", async () => {
+    const server = boot();
+    const ws = await connectAndAuth(server);
+    ws.send(JSON.stringify({ type: "settings.set", id: "k9", apiKey: "sk ant" }));
+    const msg = await nextMessage(ws);
+    expect(msg).toMatchObject({ type: "error", id: "k9", code: "bad-request" });
+    ws.close();
+  });
+
+  test("an oversized apiKey (over 512 chars) is rejected with bad-request", async () => {
+    const server = boot();
+    const ws = await connectAndAuth(server);
+    ws.send(JSON.stringify({ type: "settings.set", id: "k10", apiKey: "a".repeat(513) }));
+    const msg = await nextMessage(ws);
+    expect(msg).toMatchObject({ type: "error", id: "k10", code: "bad-request" });
+    ws.close();
+  });
+
+  test("an empty-string apiKey is still accepted (means: forget the stored key)", async () => {
+    const server = boot();
+    const ws = await connectAndAuth(server);
+    ws.send(JSON.stringify({ type: "settings.set", id: "k11", apiKey: "" }));
+    const msg = await nextMessage(ws);
+    expect(msg).toMatchObject({ type: "settings", id: "k11" });
+    ws.close();
+  });
+});
+
+// --- configured flag (task 2) -----------------------------------------------
+describe("settings — the `configured` flag", () => {
+  test("claude-api starts unconfigured (no key) and becomes configured once a key is set", async () => {
+    const server = boot();
+    const ws = await connectAndAuth(server);
+
+    ws.send(JSON.stringify({ type: "settings.get", id: "c1" }));
+    const before = (await nextMessage(ws)) as SettingsMessage;
+    const beforeStatus = before.available.find((p) => p.id === "claude-api")!;
+    expect(beforeStatus.configured).toBe(false);
+
+    ws.send(JSON.stringify({ type: "settings.set", id: "c2", apiKey: "sk-ant-now-configured" }));
+    const after = (await nextMessage(ws)) as SettingsMessage;
+    const afterStatus = after.available.find((p) => p.id === "claude-api")!;
+    expect(afterStatus.configured).toBe(true);
+    ws.close();
+  });
+
+  test("ollama is configured when its daemon answers, independent of the chosen model being installed", async () => {
+    __setOllamaFetch((async (url: string) => {
+      if (url.endsWith("/api/tags")) {
+        return new Response(JSON.stringify({ models: [{ name: "llama3.2:latest" }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as unknown as typeof fetch);
+
+    const server = boot();
+    const ws = await connectAndAuth(server);
+    // A model that is NOT in the fake /api/tags list — available should be
+    // false (model not installed) while configured stays true (daemon answers).
+    ws.send(JSON.stringify({ type: "settings.set", id: "c3", provider: "ollama", model: "not-installed-model" }));
+    const msg = (await nextMessage(ws)) as SettingsMessage;
+    const status = msg.available.find((p) => p.id === "ollama")!;
+    expect(status.configured).toBe(true);
+    expect(status.available).toBe(false);
+    ws.close();
+  });
+});
+
+// --- settings.test / settings.test-result (task 3) --------------------------
+describe("settings.test", () => {
+  test("claude-api: a successful minimal call reports ok with a French success message", async () => {
+    __setClaudeApiFetch((async () => {
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "message_stop" })}\n`));
+          controller.close();
+        },
+      });
+      return new Response(body, { status: 200 });
+    }) as unknown as typeof fetch);
+
+    const server = boot();
+    const ws = await connectAndAuth(server);
+    ws.send(JSON.stringify({ type: "settings.set", id: "t0", apiKey: "sk-ant-works" }));
+    await nextMessage(ws);
+    ws.send(JSON.stringify({ type: "settings.test", id: "t1", provider: "claude-api" }));
+    const msg = (await nextMessage(ws)) as SettingsTestResultMessage;
+    expect(msg.type).toBe("settings.test-result");
+    expect(msg.provider).toBe("claude-api");
+    expect(msg.ok).toBe(true);
+    expect(msg.message).toMatch(/[Aa]nthropic/);
+    ws.close();
+  });
+
+  test("claude-api: no key configured fails immediately, without a network call, naming the remedy", async () => {
+    let fetchCalled = false;
+    __setClaudeApiFetch((async () => {
+      fetchCalled = true;
+      throw new Error("should not be called");
+    }) as unknown as typeof fetch);
+
+    const server = boot();
+    const ws = await connectAndAuth(server);
+    ws.send(JSON.stringify({ type: "settings.test", id: "t2", provider: "claude-api" }));
+    const msg = (await nextMessage(ws)) as SettingsTestResultMessage;
+    expect(msg.ok).toBe(false);
+    expect(msg.message).toMatch(/clé/i);
+    expect(fetchCalled).toBe(false);
+    ws.close();
+  });
+
+  test("claude-api: a refused key (401) fails with the French auth remedy, key never in the message", async () => {
+    __setClaudeApiFetch((async () => new Response("nope", { status: 401 })) as unknown as typeof fetch);
+
+    const server = boot();
+    const ws = await connectAndAuth(server);
+    ws.send(JSON.stringify({ type: "settings.set", id: "t3", apiKey: "sk-ant-bad-key-value" }));
+    await nextMessage(ws);
+    ws.send(JSON.stringify({ type: "settings.test", id: "t4", provider: "claude-api" }));
+    const msg = (await nextMessage(ws)) as SettingsTestResultMessage;
+    expect(msg.ok).toBe(false);
+    expect(msg.message).toMatch(/clé/i);
+    expect(msg.message).not.toContain("sk-ant-bad-key-value");
+    ws.close();
+  });
+
+  test("ollama: no model configured fails immediately, naming the remedy", async () => {
+    const server = boot();
+    const ws = await connectAndAuth(server);
+    ws.send(JSON.stringify({ type: "settings.test", id: "t5", provider: "ollama" }));
+    const msg = (await nextMessage(ws)) as SettingsTestResultMessage;
+    expect(msg.ok).toBe(false);
+    expect(msg.message).toMatch(/mod[eè]le/i);
+    ws.close();
+  });
+
+  test("ollama: unreachable daemon fails, naming Ollama as the remedy", async () => {
+    __setOllamaFetch((async () => {
+      throw new Error("fetch failed: connect ECONNREFUSED 127.0.0.1:11434");
+    }) as unknown as typeof fetch);
+
+    const server = boot();
+    const ws = await connectAndAuth(server);
+    ws.send(JSON.stringify({ type: "settings.set", id: "t6", provider: "ollama", model: "llama3.2" }));
+    await nextMessage(ws);
+    ws.send(JSON.stringify({ type: "settings.test", id: "t7", provider: "ollama" }));
+    const msg = (await nextMessage(ws)) as SettingsTestResultMessage;
+    expect(msg.ok).toBe(false);
+    expect(msg.message).toMatch(/Ollama/);
+    ws.close();
+  });
+
+  test("claude-cli: a successful minimal call reports ok", async () => {
+    __setClaudeCliQuery((() => {
+      async function* gen() {
+        yield { type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "ok" } } };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      }
+      return gen();
+    }) as any);
+
+    const server = boot();
+    const ws = await connectAndAuth(server);
+    ws.send(JSON.stringify({ type: "settings.test", id: "t8", provider: "claude-cli" }));
+    const msg = (await nextMessage(ws)) as SettingsTestResultMessage;
+    expect(msg.ok).toBe(true);
+    expect(msg.message).toMatch(/Claude Code/);
+    ws.close();
+  });
+
+  test("claude-cli: an expired session fails with the French auth-required remedy", async () => {
+    __setClaudeCliQuery((() => {
+      async function* gen(): AsyncGenerator<never, void> {
+        throw new Error("Please run /login to continue");
+      }
+      return gen();
+    }) as any);
+
+    const server = boot();
+    const ws = await connectAndAuth(server);
+    ws.send(JSON.stringify({ type: "settings.test", id: "t9", provider: "claude-cli" }));
+    const msg = (await nextMessage(ws)) as SettingsTestResultMessage;
+    expect(msg.ok).toBe(false);
+    expect(msg.message).toMatch(/claude \/login/i);
+    ws.close();
+  });
+
+  test("an invalid provider is rejected at the wire with bad-request", async () => {
+    const server = boot();
+    const ws = await connectAndAuth(server);
+    ws.send(JSON.stringify({ type: "settings.test", id: "t10", provider: "not-a-real-provider" }));
+    const msg = await nextMessage(ws);
+    expect(msg).toMatchObject({ type: "error", id: "t10", code: "bad-request" });
     ws.close();
   });
 });

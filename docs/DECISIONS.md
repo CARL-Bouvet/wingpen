@@ -132,3 +132,23 @@ un message d'une ligne n'apparaît que si l'utilisateur demande ce que Wingpen n
 7. **Keywall** — le BYOK impose de coller une clé avant la première réponse, y compris en gratuit. L'entonnoir d'installation ne ressemble pas à celui des benchmarks de `revenus.md`. Parades en `faisabilite.md` §5 : promesse visible avant la demande de clé, chemin Ollama sans clé, guide en trois images.
 8. **Plafond de statut** — le régime auto-entrepreneur plafonne à 77 700 € de CA, atteint vers ~470 abonnés à 15 €/mois. Passage en société à préparer avant de l'atteindre.
 9. **Verticale unique** — toute la recette dans un seul panier. Ouvrir la suivante dès que la première tient, une à la fois.
+
+## Appairage et connexion au modèle (25/09)
+
+Issues du goal du 25/09 (audits du jeton et de la connexion, revue de sécurité du lot 7). Étude
+et comparaison des transports : `etudes/appairage.md`.
+
+| # | Décision | Motif |
+|---|---|---|
+| T20 | **La frontière de menace est le compte utilisateur du système, et le code l'applique** : liste `Host` exacte, puis UID du pair sous Linux, avant tout routage ; hors Linux, non appliqué et dit au démarrage | L'ancienne note promettait le compte alors que tout processus de la machine passait, autres comptes compris (`PROTOCOL.md`, « Frontière de menace », « Admission HTTP et WebSocket »). |
+| T21 | **`hello-ok` délivre un jeton de session** : 256 bits, en mémoire seulement, lié à l'origine, 64 au plus ; le secret permanent ne sert plus qu'à épingler un uuid Firefox | L'extension ne détient plus de secret durable, et un redémarrage du broker invalide tout ce qui a été délivré (`PROTOCOL.md`, « Poignée de main », « Jeton de session »). |
+| T22 | **Chemin « un clic » retiré** : plus d'`externally_connectable`, de message `wingpen:pair` ni de bouton sur `/pair` | Inutile pour un ID autorisé (appairage silencieux), impossible pour un ID inconnu (refusé à l'`Origin`), et ouvert à toute page servie sur le port, donc à un programme qui l'occuperait (`PROTOCOL.md`, « Chemin « un clic » retiré »). |
+| T23 | **`/pair` réservée à Firefox**, sans ID ni script, servie seulement à une navigation de premier niveau (`Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`) | C'était la plus grosse exposition du secret permanent ; le filtre écarte le `fetch()` d'une autre extension, seul Native Messaging ferme le reste (`PROTOCOL.md`, « Page `/pair` (Firefox seulement) »). |
+| T24 | **Port 8787 figé** : `config.port` n'est plus lu, `WINGPEN_PORT` sert aux tests | L'adresse du service worker et le `connect-src` de la CSP sont littéraux : un autre port est injoignable (`PROTOCOL.md`, « Transport »). |
+| T25 | **Disponibilité du fournisseur vérifiée à l'ouverture du panneau seulement, sans appel facturé** (`provider.status`, cache de 60 s) | Règle du geste, et aucune dépense sur la clé ou l'abonnement de l'utilisateur pour un simple affichage (`PROTOCOL.md`, « Disponibilité du fournisseur »). |
+| T26 | **Aucune bascule automatique de fournisseur** : seul un `settings.set` venu de l'utilisateur en change | Changer de fournisseur change le destinataire des pages (T16) ; ce choix appartient à l'utilisateur (`PROTOCOL.md`, « Disponibilité du fournisseur », « Règles invariantes »). |
+
+Élément neuf, sans rouvrir de décision ici : le motif de T3 et du risque ouvert n°1
+(crbug.com/421156866, « pas encore » appliqué aux WebSockets) est daté. Chrome 147 et Firefox 154
+filtrent désormais les WebSockets des sites web ; les origines d'extension restent hors de portée,
+sans garantie écrite. Le risque ouvert n°4 est précisé par T20. Détail : `etudes/appairage.md` §3.

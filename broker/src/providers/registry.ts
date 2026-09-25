@@ -6,8 +6,9 @@
 import type { ModelProvider } from "./types.ts";
 import { claudeCliProvider } from "./claude-cli.ts";
 import { ollamaProvider } from "./ollama.ts";
+import { claudeApiProvider } from "./claude-api.ts";
 
-export const PROVIDERS: readonly ModelProvider[] = [claudeCliProvider, ollamaProvider];
+export const PROVIDERS: readonly ModelProvider[] = [claudeCliProvider, ollamaProvider, claudeApiProvider];
 
 export function getProvider(id: string | undefined): ModelProvider | undefined {
   return PROVIDERS.find((p) => p.id === id);

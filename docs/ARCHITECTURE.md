@@ -167,16 +167,21 @@ théorie (par exemple via `wscat`), inatteignable depuis l'interface livrée.
 **Jeton de pairage.** Créé côté broker, une seule fois, au premier démarrage :
 `loadOrCreatePairingSecret()` génère 16 octets aléatoires en hex et les écrit dans
 `~/.local/share/wingpen/pairing.txt`, permissions `0600` (`config.ts:67-79`). Il rejoint l'extension
-par l'un de deux chemins : soit collé à la main dans la page d'options (repli), soit — chemin
-normal depuis l'appairage en un clic — transmis directement par la page `GET /pair` que le broker
-sert lui-même via `chrome.runtime.sendMessage(EXTENSION_ID, {type:"wingpen:pair", token})`, reçu
-côté extension par `chrome.runtime.onMessageExternal` (`service-worker.js`, voir
-`docs/PROTOCOL.md` « Appairage en un clic »). Dans les deux cas, il est stocké côté extension dans
-`chrome.storage.session` (jamais `chrome.storage.local`) — une mémoire vive au sens propre : elle
-n'est jamais écrite sur disque et s'efface à la fermeture du navigateur. C'est précisément ce qui
-rend l'appairage en un clic nécessaire : ce stockage s'efface à **chaque** redémarrage du
-navigateur, donc sans lui l'utilisateur recollerait le jeton à la main à chaque session. À chaque
-connexion, le service worker le relit et l'envoie dans le message `hello` (`service-worker.js:73,90`).
+selon le navigateur (voir `docs/PROTOCOL.md` « Appairage » pour le détail de chaque chemin) :
+
+- **Chromium/Brave** — octroi silencieux à la poignée de main : le broker connaît l'identifiant
+  de l'extension, insère le jeton dans le champ `token` du message `hello-ok`, et l'extension le
+  lit sans aucune interaction de l'utilisateur. Les connexions suivantes sont elles aussi silencieuses.
+- **Firefox** — l'UUID de l'extension est instable (il change à chaque rechargement pour une
+  extension temporaire). Au premier démarrage — ou à chaque rechargement d'une extension temporaire —
+  l'utilisateur colle le secret permanent affiché par `GET /pair` dans la page d'options.
+  Une fois l'UUID épinglé côté broker (`docs/PROTOCOL.md` « Épinglage Firefox »), les connexions
+  ultérieures sont silencieuses.
+
+Dans les deux cas, le jeton est stocké côté extension dans `chrome.storage.session`
+(jamais `chrome.storage.local`) — une mémoire vive au sens propre : elle n'est jamais écrite sur
+disque et s'efface à la fermeture du navigateur. À chaque connexion, le service worker le relit
+et l'envoie dans le message `hello` (`service-worker.js:73,90`).
 Le broker le vérifie par comparaison à temps constant, `checkSecret()`
 (`server.ts:32-38,161`) — un détail qui compte : une comparaison naïve fuiterait le secret
 octet par octet via le temps de réponse.

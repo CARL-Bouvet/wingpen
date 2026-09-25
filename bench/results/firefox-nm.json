@@ -1,0 +1,138 @@
+{
+  "meta": {
+    "browser": "firefox",
+    "transport": "nm",
+    "startedAt": "2026-09-24T23:06:36.836Z",
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64; rv:155.0) Gecko/20100101 Firefox/155.0",
+    "updatedAt": "2026-09-24T23:11:43.084Z",
+    "installError": null
+  },
+  "coldConnect": {
+    "samples": [
+      42,
+      26,
+      24,
+      25,
+      25,
+      23,
+      30,
+      25,
+      25,
+      24
+    ],
+    "n": 10,
+    "p50": 25,
+    "p95": 42,
+    "p99": 42,
+    "min": 23,
+    "max": 42
+  },
+  "roundTrip": [
+    {
+      "startedAt": 1790291198157,
+      "endedAt": 1790291198498,
+      "n": 1000,
+      "p50": 0,
+      "p95": 1,
+      "p99": 2,
+      "min": 0,
+      "max": 3
+    },
+    {
+      "startedAt": 1790291198775,
+      "endedAt": 1790291199131,
+      "n": 1000,
+      "p50": 0,
+      "p95": 1,
+      "p99": 2,
+      "min": 0,
+      "max": 21
+    },
+    {
+      "startedAt": 1790291199362,
+      "endedAt": 1790291199673,
+      "n": 1000,
+      "p50": 0,
+      "p95": 1,
+      "p99": 2,
+      "min": 0,
+      "max": 4
+    }
+  ],
+  "streaming": [
+    {
+      "elapsed": 307,
+      "bytes": 300000,
+      "count": 5000,
+      "throughputBytesPerSec": 977198.6970684039
+    },
+    {
+      "elapsed": 263,
+      "bytes": 300000,
+      "count": 5000,
+      "throughputBytesPerSec": 1140684.4106463878
+    },
+    {
+      "elapsed": 277,
+      "bytes": 300000,
+      "count": 5000,
+      "throughputBytesPerSec": 1083032.4909747292
+    }
+  ],
+  "upload": [
+    {
+      "elapsed": 32,
+      "ackBytes": 1048576,
+      "error": null
+    },
+    {
+      "elapsed": 15,
+      "ackBytes": 1048576,
+      "error": null
+    },
+    {
+      "elapsed": 15,
+      "ackBytes": 1048576,
+      "error": null
+    },
+    {
+      "elapsed": 14,
+      "ackBytes": 1048576,
+      "error": null
+    },
+    {
+      "elapsed": 17,
+      "ackBytes": 1048576,
+      "error": null
+    }
+  ],
+  "idle": {
+    "status": "survived",
+    "pingElapsedMs": 7,
+    "serviceWorkerSurvivedInProcess": true
+  },
+  "errors": [],
+  "cpuRss": [
+    {
+      "samples": 4,
+      "pcpuAvg": 15.875,
+      "pcpuMax": 20,
+      "rssKbAvg": 33251,
+      "rssKbMax": 35388
+    },
+    {
+      "samples": 4,
+      "pcpuAvg": 30.9,
+      "pcpuMax": 50,
+      "rssKbAvg": 33150,
+      "rssKbMax": 35368
+    },
+    {
+      "samples": 3,
+      "pcpuAvg": 17.333333333333332,
+      "pcpuMax": 20,
+      "rssKbAvg": 32510.666666666668,
+      "rssKbMax": 34796
+    }
+  ]
+}

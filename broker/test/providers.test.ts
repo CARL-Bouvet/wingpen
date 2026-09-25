@@ -20,14 +20,15 @@ afterEach(() => {
 });
 
 describe("provider registry", () => {
-  test("lists both known providers", () => {
+  test("lists all known providers", () => {
     const ids = PROVIDERS.map((p) => p.id);
-    expect(ids).toEqual(["claude-cli", "ollama"]);
+    expect(ids).toEqual(["claude-cli", "ollama", "claude-api"]);
   });
 
   test("getProvider finds by id", () => {
     expect(getProvider("ollama")?.label).toBeTruthy();
     expect(getProvider("claude-cli")?.label).toBeTruthy();
+    expect(getProvider("claude-api")?.label).toBeTruthy();
   });
 
   test("getProvider returns undefined for an unknown id", () => {

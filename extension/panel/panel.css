@@ -207,9 +207,83 @@ body {
   font-size: 12.5px;
 }
 
+.timestamp-link {
+  border: none;
+  background: transparent;
+  color: #3b5cf6;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+}
+
+.timestamp-link:hover,
+.timestamp-link:focus-visible {
+  color: #2d4be0;
+}
+
 .message--streaming::after {
   content: "▍";
   animation: blink 1s step-start infinite;
+}
+
+.recovery-block {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #d8d8de;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  white-space: normal;
+}
+
+.recovery-command {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.recovery-command code {
+  background: #fff;
+  border: 1px solid #d8d8de;
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12.5px;
+}
+
+.recovery-copy,
+.recovery-retry {
+  border: none;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.recovery-copy {
+  background: #fff;
+  border: 1px solid #d8d8de;
+  color: #1f2430;
+}
+
+.recovery-copy:hover {
+  background: #f4f4f6;
+}
+
+.recovery-retry {
+  background: #3b5cf6;
+  color: #fff;
+}
+
+.recovery-retry:hover {
+  background: #2d4be0;
+}
+
+.recovery-retry:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 @keyframes blink {
@@ -281,4 +355,12 @@ body {
 .composer-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.build-info {
+  padding: 3px 12px 5px;
+  font-size: 10px;
+  color: #b3b3ba;
+  text-align: center;
+  user-select: text;
 }

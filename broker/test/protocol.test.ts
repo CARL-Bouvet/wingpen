@@ -94,8 +94,21 @@ describe("parseClientMessage", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("rejects hello missing secret", () => {
+  test("parses hello with no secret — silent-pairing auto-grant request", () => {
     const result = parseClientMessage(JSON.stringify({ type: "hello", v: 1 }));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.message).toEqual({ type: "hello", secret: undefined, v: 1 });
+    }
+  });
+
+  test("rejects hello with an empty-string secret — omit the field instead", () => {
+    const result = parseClientMessage(JSON.stringify({ type: "hello", secret: "", v: 1 }));
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects hello with a non-string secret", () => {
+    const result = parseClientMessage(JSON.stringify({ type: "hello", secret: 42, v: 1 }));
     expect(result.ok).toBe(false);
   });
 

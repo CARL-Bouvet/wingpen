@@ -8,10 +8,12 @@
 <body>
   <h1>Réglages Wingpen</h1>
   <p class="help">
-    Collez le jeton de pairage affiché par le broker au premier démarrage
-    (fichier <code>~/.local/share/wingpen/pairing.txt</code>). Le jeton n'est
-    jamais écrit sur le disque par l'extension : il reste en mémoire vive et
-    disparaît à la fermeture du navigateur.
+    Sous Chromium/Brave, rien à coller ici : l'extension s'appaire seule avec
+    le broker. Sous Firefox, collez ici le secret affiché par
+    <code>http://127.0.0.1:8787/pair</code> — un geste à faire une seule fois
+    par installation. Le jeton n'est jamais écrit sur le disque par
+    l'extension : il reste en mémoire vive et disparaît à la fermeture du
+    navigateur.
   </p>
 
   <div class="field">
@@ -29,10 +31,10 @@
 
   <h1>Modèle</h1>
   <p class="help">
-    Wingpen peut parler à deux fournisseurs de modèle : le CLI Claude installé
-    sur cette machine, ou un modèle Ollama qui tourne en local — le seul choix
-    pour lequel rien ne quitte cet ordinateur. Ce réglage vit dans le broker ;
-    changer de fournisseur ici s'applique à la prochaine requête.
+    Wingpen ne revend jamais d'accès à un modèle : choisissez celui qui traite
+    vos demandes — votre propre clé Anthropic, un modèle Ollama local, ou
+    votre installation Claude Code. Ce réglage vit dans le broker ; changer de
+    fournisseur ici s'applique à la prochaine requête.
   </p>
   <div id="modelSection">
     <p id="modelDisconnected" class="help" hidden>

@@ -1,0 +1,13 @@
+{
+  "status": "measured",
+  "measuredBy": "admin shell (outside the worker sandbox), 2026-09-25",
+  "command": "bun scripts/probe-summarize.ts",
+  "broker": "real broker on 127.0.0.1:8787 (pre-goal code, systemd), provider claude-cli (Claude Max subscription)",
+  "note": "End-to-end time from WebSocket open to the broker's `done` for a summarize of a fake YouTube transcript. The probe does not print intermediate chunks, so time-to-first-token is not isolated; the totals bound it from above.",
+  "runs": [
+    { "totalMs": 4579, "outputTokens": 228 },
+    { "totalMs": 4467, "outputTokens": 243 },
+    { "totalMs": 4232, "outputTokens": 234 }
+  ],
+  "handshakeMs": [9, 15, 11]
+}

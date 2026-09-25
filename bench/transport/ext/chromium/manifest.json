@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "wingpen-transport-bench",
+  "version": "0.0.1",
+  "description": "Isolated prototype, never wired into Wingpen. Measures WS vs Native Messaging transport latency.",
+  "_comment_key": "Fixed throwaway keypair (not secret, generated for this bench only) so the extension ID is stable and independent of --load-extension's absolute path — required so the Native Messaging host manifest's allowed_origins can name the extension ID in advance. ID: hiajdmhhpoajipmlilaaaalgbmbjekho.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAn1spcikCDzMffhv9pPDbfDE2MME8bWpfGv82xvDAcDuHcbotIFRm0+4B6/go+A9EZu0bV0SdCU9eatdBuP3eD1s5C4EKY71UwkExGWCzpT1GvQnl44nELP4l65LrapEWXT633MN61WMcUHMgneWl3rMMm84I2LHgcKzFEfnZ+TgohIjHD34Fw7QMSugREmzADF0z8OMcZie3vYW9vrAeAUcj8vASI/9X4+r8X0Jq+JM5O2FTtDGm117bJGDhQRxJ8Tv5U2G1GQ6OKzA2Owxi4+ARnKvG2HE1+8I14nMCPENgYVrNyP8dri+/Z2ZoxciU95AjwaD7uhpoQ4/rg7ZmYQIDAQAB",
+  "permissions": ["nativeMessaging"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_security_policy": {
+    "extension_pages": "default-src 'self'; connect-src ws://127.0.0.1:18787 'self'"
+  }
+}

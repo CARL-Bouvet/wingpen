@@ -1,0 +1,137 @@
+{
+  "meta": {
+    "browser": "firefox",
+    "transport": "ws",
+    "startedAt": "2026-09-24T22:57:30.663Z",
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64; rv:155.0) Gecko/20100101 Firefox/155.0",
+    "updatedAt": "2026-09-24T22:57:36.529Z",
+    "installError": null
+  },
+  "coldConnect": {
+    "samples": [
+      11,
+      1,
+      2,
+      2,
+      1,
+      2,
+      6,
+      7,
+      2,
+      6
+    ],
+    "n": 10,
+    "p50": 2,
+    "p95": 11,
+    "p99": 11,
+    "min": 1,
+    "max": 11
+  },
+  "roundTrip": [
+    {
+      "startedAt": 1790290651726,
+      "endedAt": 1790290652567,
+      "n": 1000,
+      "p50": 1,
+      "p95": 2,
+      "p99": 2,
+      "min": 0,
+      "max": 10
+    },
+    {
+      "startedAt": 1790290652775,
+      "endedAt": 1790290653186,
+      "n": 1000,
+      "p50": 0,
+      "p95": 1,
+      "p99": 2,
+      "min": 0,
+      "max": 4
+    },
+    {
+      "startedAt": 1790290653393,
+      "endedAt": 1790290654192,
+      "n": 1000,
+      "p50": 1,
+      "p95": 1,
+      "p99": 2,
+      "min": 0,
+      "max": 3
+    }
+  ],
+  "streaming": [
+    {
+      "elapsed": 145,
+      "bytes": 300000,
+      "count": 5000,
+      "throughputBytesPerSec": 2068965.5172413795
+    },
+    {
+      "elapsed": 160,
+      "bytes": 300000,
+      "count": 5000,
+      "throughputBytesPerSec": 1875000
+    },
+    {
+      "elapsed": 158,
+      "bytes": 300000,
+      "count": 5000,
+      "throughputBytesPerSec": 1898734.17721519
+    }
+  ],
+  "upload": [
+    {
+      "elapsed": 6,
+      "ackBytes": 1048576,
+      "error": null
+    },
+    {
+      "elapsed": 6,
+      "ackBytes": 1048576,
+      "error": null
+    },
+    {
+      "elapsed": 6,
+      "ackBytes": 1048576,
+      "error": null
+    },
+    {
+      "elapsed": 6,
+      "ackBytes": 1048576,
+      "error": null
+    },
+    {
+      "elapsed": 5,
+      "ackBytes": 1048576,
+      "error": null
+    }
+  ],
+  "idle": {
+    "status": "pending",
+    "startedAt": "2026-09-24T22:57:36.529Z"
+  },
+  "errors": [],
+  "cpuRss": [
+    {
+      "samples": 9,
+      "pcpuAvg": 1.4000000000000001,
+      "pcpuMax": 2.3,
+      "rssKbAvg": 34281.333333333336,
+      "rssKbMax": 35396
+    },
+    {
+      "samples": 4,
+      "pcpuAvg": 2.85,
+      "pcpuMax": 3,
+      "rssKbAvg": 35660,
+      "rssKbMax": 35792
+    },
+    {
+      "samples": 8,
+      "pcpuAvg": 3.8625,
+      "pcpuMax": 4.5,
+      "rssKbAvg": 35911,
+      "rssKbMax": 36264
+    }
+  ]
+}

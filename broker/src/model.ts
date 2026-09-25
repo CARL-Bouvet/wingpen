@@ -6,7 +6,7 @@
 // duplicate buildPrompt/buildSystemPrompt inside a provider.
 
 import { randomBytes } from "node:crypto";
-import type { Context, ActAction } from "./protocol.ts";
+import type { Context, ContextKind, ActAction } from "./protocol.ts";
 
 /**
  * Generates a fresh per-request nonce delimiter. Used to fence untrusted page
@@ -111,6 +111,35 @@ const ACT_VERB: Record<ActAction, string> = {
   shorten: "Shorten",
 };
 
+/** The shape a summary takes. Lives outside the fence, so it is trusted text —
+ * never interpolate anything page-controlled in here. Bullets rather than prose
+ * because the summary is read in a narrow side panel; the closing line exists so
+ * a skimmed summary still yields one takeaway. On a YouTube transcript the
+ * extractor keeps each segment's timestamp (extension/content/extract.js:127),
+ * so the model can anchor every bullet to a moment in the video. */
+function summarizeInstruction(kind: ContextKind, length: "short" | "medium"): string {
+  const bullets = length === "short" ? "3 à 4" : "6 à 8";
+  const lines = [
+    "Summarize the page content above. Write the summary IN FRENCH, whatever language the",
+    "content is in.",
+    "",
+    `Format: ${bullets} bullet points, one idea each, one or two lines each. No preamble, no`,
+    "restatement of the title, no closing commentary. Keep the content's own terminology rather",
+    "than paraphrasing it into vagueness; a summary that could describe any page is worthless.",
+  ];
+  if (kind === "youtube") {
+    lines.push(
+      "",
+      "The content is a video transcript whose segments carry timestamps. Prefix every bullet",
+      "with the timestamp where that point starts, in the exact form [mm:ss] (or [h:mm:ss] past",
+      "an hour), taken from the transcript — never invented. If a timestamp cannot be determined",
+      "for a bullet, omit the prefix for that bullet rather than guessing.",
+    );
+  }
+  lines.push("", 'Finish with one last line starting with "À retenir : " giving the single takeaway.');
+  return lines.join("\n");
+}
+
 export interface BuiltPrompt {
   /** The final prompt text sent to the model. */
   prompt: string;
@@ -135,7 +164,7 @@ export function buildPrompt(input: PromptInput): BuiltPrompt {
     case "summarize": {
       const parts = [
         renderContext(input.context, nonce),
-        `Summarize the page content above at ${input.length} length.`,
+        summarizeInstruction(input.context.kind, input.length),
       ];
       return { prompt: parts.join("\n\n"), nonce };
     }
@@ -178,6 +207,31 @@ export class ModelUnavailableError extends Error {
 }
 
 /**
+ * Thrown by a provider when it can positively determine the underlying
+ * session/credentials are the problem — not "model unreachable", not "hung",
+ * but "the human needs to re-authenticate". Distinct from
+ * ModelUnavailableError on purpose (task C3, 2026-09-21): Claude Code
+ * sessions expire routinely, and the remedy (`claude /login`) is nothing like
+ * the remedy for a missing binary or an overloaded API, so folding it into
+ * `model-unavailable` would send the user fixing the wrong thing. See
+ * providers/claude-cli.ts's looksLikeAuthFailure for what actually throws
+ * this.
+ */
+export class AuthRequiredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AuthRequiredError";
+  }
+}
+
+/** True when `err` is (or wraps) an AuthRequiredError. Used by server.ts to
+ * pick the `auth-required` error code ahead of `model-unavailable`/`internal`
+ * — see PROTOCOL.md. */
+export function isAuthRequiredError(err: unknown): boolean {
+  return err instanceof AuthRequiredError;
+}
+
+/**
  * True when `err` indicates the model itself is unreachable — the `claude`
  * binary missing or not executable (spawn ENOENT/EACCES), a quota/rate-limit
  * rejection surfaced by the SDK, a hung call that hit the provider's timeout,
@@ -186,9 +240,12 @@ export class ModelUnavailableError extends Error {
  * Used by server.ts to pick between the `model-unavailable` and `internal`
  * error codes (see PROTOCOL.md). Provider-agnostic on purpose: every provider
  * either throws one of the two typed errors above, or an Error whose message
- * matches one of the patterns below.
+ * matches one of the patterns below. Never true for an AuthRequiredError —
+ * that gets its own `auth-required` code (see isAuthRequiredError above),
+ * checked first by server.ts.
  */
 export function isModelUnavailableError(err: unknown): boolean {
+  if (err instanceof AuthRequiredError) return false;
   if (err instanceof ModelTimeoutError) return true;
   if (err instanceof ModelUnavailableError) return true;
   if (!(err instanceof Error)) return false;

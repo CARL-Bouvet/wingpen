@@ -5,6 +5,7 @@
 // that's ../model.ts, on purpose, so it cannot be duplicated per provider.
 
 import type { AnswerEvent, BuiltPrompt, StreamAnswerOptions } from "../model.ts";
+import type { ProviderStatusState } from "../protocol.ts";
 
 export interface Availability {
   available: boolean;
@@ -15,11 +16,26 @@ export interface Availability {
 }
 
 /** Runtime knobs threaded in from WingpenConfig (broker/src/config.ts).
- * Providers ignore whatever they don't need — claude-cli ignores ollamaUrl,
- * both accept model. */
+ * Providers ignore whatever they don't need — claude-cli ignores ollamaUrl
+ * and apiKey, ollama ignores apiKey, claude-api ignores ollamaUrl. `apiKey`
+ * is WRITE-ONLY end to end (see config.ts's WingpenConfig.apiKey) — it flows
+ * from config into this options bag and into the Anthropic API request
+ * header, and nowhere else. */
 export interface ProviderRuntimeOptions {
   model?: string;
   ollamaUrl?: string;
+  apiKey?: string;
+}
+
+/** One provider's answer to `provider.status` (docs/PROTOCOL.md, amendement
+ * 2026-09-25, "Disponibilité du fournisseur") — a cheap, NEVER-BILLED probe,
+ * distinct from isAvailable() (which some providers make a real paid/model
+ * call to establish, e.g. none currently do, but the contract allows it).
+ * `reason` is one of each provider's own closed set of short English codes —
+ * see the per-provider implementation for the exact list. */
+export interface StatusCheck {
+  state: ProviderStatusState;
+  reason: string;
 }
 
 export interface ModelProvider {
@@ -33,6 +49,9 @@ export interface ModelProvider {
    * (currently just ollama, via /api/tags). Used to populate the settings
    * UI's model picker. */
   listModels?(opts: ProviderRuntimeOptions): Promise<string[]>;
+  /** Backs `provider.status` (see StatusCheck above). Every provider
+   * implements this — unlike isAvailable(), it never makes a billed call. */
+  checkStatus(opts: ProviderRuntimeOptions): Promise<StatusCheck>;
   /** Streams the model's answer to `built.prompt`. Throws ModelTimeoutError
    * or ModelUnavailableError (../model.ts) for conditions server.ts should
    * report as `model-unavailable` rather than `internal`. */

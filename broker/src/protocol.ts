@@ -9,6 +9,7 @@ export type ErrorCode =
   | "bad-request"
   | "unauthorized"
   | "model-unavailable"
+  | "auth-required"
   | "context-too-large"
   | "cancelled"
   | "internal";
@@ -30,7 +31,12 @@ export interface PromptEntry {
 
 export interface HelloMessage {
   type: "hello";
-  secret: string;
+  // Omitted (not just empty) means "I have no token — auto-grant me one if
+  // my origin is already trusted". The server only honours that for a
+  // chrome-extension:// origin already in allowedExtensionIds; see
+  // server.ts's handleHandshakeMessage and docs/PROTOCOL.md's "Appairage
+  // silencieux". Firefox's flow is unchanged — always sends a secret.
+  secret?: string;
   v: 1;
 }
 
@@ -97,6 +103,31 @@ export interface SettingsSetMessage {
   /** Omitted fields are left unchanged server-side. */
   provider?: ProviderId;
   model?: string;
+  /**
+   * The user's own Anthropic API key, for the claude-api provider. WRITE-ONLY
+   * — see config.ts's WingpenConfig.apiKey and CLAUDE.md rule #1: it is
+   * accepted here, persisted, and never echoed back in any `settings`
+   * response. An empty string means "forget the stored key". Omitted means
+   * "leave the stored key unchanged", same as every other field here.
+   */
+  apiKey?: string;
+}
+
+// Added for task 3 (2026-09-21): backs the panel's "Tester la connexion"
+// button — see docs/PROTOCOL.md's settings.test amendment.
+export interface SettingsTestMessage {
+  type: "settings.test";
+  id: string;
+  provider: ProviderId;
+}
+
+// Amendement 2026-09-25 — "Disponibilité du fournisseur". Sent by the panel
+// once per panel open only (never automatically, never periodically — see
+// CLAUDE.md rule #5, "la règle du geste"). Takes no field beyond `id`: it
+// always targets the currently active provider.
+export interface ProviderStatusMessage {
+  type: "provider.status";
+  id: string;
 }
 
 export type ClientMessage =
@@ -109,7 +140,9 @@ export type ClientMessage =
   | PromptsDeleteMessage
   | CancelMessage
   | SettingsGetMessage
-  | SettingsSetMessage;
+  | SettingsSetMessage
+  | SettingsTestMessage
+  | ProviderStatusMessage;
 
 // --- Server -> client messages ---
 
@@ -143,6 +176,12 @@ export interface HelloOkMessage {
   v: 1;
   models: string[];
   capabilities: string[];
+  // Amendement 2026-09-25: ALWAYS present on every grant, whatever the path —
+  // a fresh session token (memory-only, invalid after a broker restart) if
+  // the hello didn't already present a valid one, or the SAME session token
+  // echoed back if it did (no rotation on every reconnect). Never the
+  // permanent secret — see docs/PROTOCOL.md "Jeton de session".
+  token: string;
 }
 
 /** Reported per known provider in a SettingsMessage's `available` array —
@@ -153,6 +192,14 @@ export interface ProviderStatus {
   label: string;
   available: boolean;
   reason?: string;
+  /**
+   * True when this provider has what it needs to be used at all — a stored
+   * API key (claude-api), a reachable daemon (ollama), an installed CLI
+   * (claude-cli) — independent of whether the currently *selected* model is
+   * valid for it (that distinction is `available`, above). The extension
+   * shows a state, never a value: this is a boolean, never the key itself.
+   */
+  configured: boolean;
 }
 
 export interface SettingsMessage {
@@ -166,13 +213,46 @@ export interface SettingsMessage {
   models?: string[];
 }
 
+// Reply to a settings.test request — a real minimal model call, bounded by a
+// short timeout (see server.ts's SETTINGS_TEST_TIMEOUT_MS), never a
+// chat/summarize the extension would otherwise trigger via the wire. `message`
+// is French, one sentence, shown verbatim to a human — see docs/PROTOCOL.md.
+export interface SettingsTestResultMessage {
+  type: "settings.test-result";
+  id: string;
+  provider: ProviderId;
+  ok: boolean;
+  message: string;
+}
+
+// Amendement 2026-09-25 — "Disponibilité du fournisseur". `state` is the
+// broker's best answer, from a never-billed check, to "will the next request
+// against this provider work?" — see docs/PROTOCOL.md for the full
+// per-provider reason-code table (server.ts's providerStatus.ts owns the
+// actual probing). `reason` is a short, stable, English code meant for the
+// panel's own logic, never shown to a human verbatim.
+export type ProviderStatusState = "ok" | "ko" | "unknown";
+
+export interface ProviderStatusResultMessage {
+  type: "provider.status-result";
+  id: string;
+  provider: ProviderId;
+  state: ProviderStatusState;
+  reason: string;
+  /** ISO 8601 UTC — the time of the *effective* check (for a cached answer,
+   * that's the original check's time, not now). */
+  checkedAt: string;
+}
+
 export type ServerMessage =
   | ChunkMessage
   | DoneMessage
   | ErrorMessage
   | PromptsMessage
   | HelloOkMessage
-  | SettingsMessage;
+  | SettingsMessage
+  | SettingsTestResultMessage
+  | ProviderStatusResultMessage;
 
 // --- Parsing ---
 
@@ -193,6 +273,22 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.length > 0;
+}
+
+function isProviderId(v: unknown): v is ProviderId {
+  return v === "claude-cli" || v === "ollama" || v === "claude-api";
+}
+
+// I3 (lot7 security review): bounds an apiKey before it's ever persisted or
+// used in an HTTP header. Printable ASCII (0x21-0x7e — excludes space and
+// every control character, including newlines), no upper bound the real key
+// shapes come close to (Anthropic keys are well under 200 chars); generous
+// on purpose so a legitimate key format change never breaks this. Exported
+// for tests.
+const API_KEY_MAX_LEN = 512;
+const API_KEY_RE = /^[\x21-\x7e]+$/;
+export function isValidApiKeyFormat(value: string): boolean {
+  return value.length <= API_KEY_MAX_LEN && API_KEY_RE.test(value);
 }
 
 function parseContext(v: unknown): Context | undefined {
@@ -237,15 +333,20 @@ export function parseClientMessage(raw: string): ParseResult {
     return { ok: false, error: { code: "bad-request", message: "missing type" } };
   }
 
-  // hello is the only message without an id.
+  // hello is the only message without an id. `secret` may be omitted
+  // entirely (auto-grant request, see HelloMessage) but if present must be a
+  // non-empty string — never silently treated as "omitted".
   if (type === "hello") {
-    if (!isNonEmptyString(parsed.secret)) {
-      return { ok: false, error: { code: "bad-request", message: "hello: missing secret" } };
+    if (parsed.secret !== undefined && !isNonEmptyString(parsed.secret)) {
+      return { ok: false, error: { code: "bad-request", message: "hello: invalid secret" } };
     }
     if (parsed.v !== 1) {
       return { ok: false, error: { code: "bad-request", message: "hello: unsupported v" } };
     }
-    return { ok: true, message: { type: "hello", secret: parsed.secret, v: 1 } };
+    return {
+      ok: true,
+      message: { type: "hello", secret: typeof parsed.secret === "string" ? parsed.secret : undefined, v: 1 },
+    };
   }
 
   const id = parsed.id;
@@ -313,14 +414,37 @@ export function parseClientMessage(raw: string): ParseResult {
     }
     case "settings.set": {
       const provider = parsed.provider;
-      if (provider !== undefined && provider !== "claude-cli" && provider !== "ollama") {
+      if (provider !== undefined && !isProviderId(provider)) {
         return { ok: false, error: { code: "bad-request", message: "settings.set: unknown provider", id } };
       }
       const model = parsed.model;
       if (model !== undefined && typeof model !== "string") {
         return { ok: false, error: { code: "bad-request", message: "settings.set: invalid model", id } };
       }
-      return { ok: true, message: { type: "settings.set", id, provider, model } };
+      const apiKey = parsed.apiKey;
+      if (apiKey !== undefined && typeof apiKey !== "string") {
+        return { ok: false, error: { code: "bad-request", message: "settings.set: invalid apiKey", id } };
+      }
+      // I3 (lot7 security review): reject a malformed key at the door rather
+      // than persisting it and having it flow, unvalidated, into an
+      // `x-api-key` HTTP header (providers/claude-api.ts) and error text
+      // downstream — see docs/PROTOCOL.md's CLAUDE_API_AUTH_MESSAGE path. An
+      // Anthropic key is printable ASCII, no whitespace; "" is exempt (it
+      // means "forget the stored key", see SettingsSetMessage.apiKey).
+      if (apiKey !== undefined && apiKey !== "" && !isValidApiKeyFormat(apiKey)) {
+        return { ok: false, error: { code: "bad-request", message: "settings.set: invalid apiKey format", id } };
+      }
+      return { ok: true, message: { type: "settings.set", id, provider, model, apiKey } };
+    }
+    case "settings.test": {
+      const provider = parsed.provider;
+      if (!isProviderId(provider)) {
+        return { ok: false, error: { code: "bad-request", message: "settings.test: unknown provider", id } };
+      }
+      return { ok: true, message: { type: "settings.test", id, provider } };
+    }
+    case "provider.status": {
+      return { ok: true, message: { type: "provider.status", id } };
     }
     default:
       return { ok: false, error: { code: "bad-request", message: `unknown type: ${type}`, id } };

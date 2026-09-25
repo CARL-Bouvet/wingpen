@@ -53,10 +53,12 @@
 
 import { classifyPageType, classifyPageTypeFromMetadata } from "../content/detect.js";
 import { applyRetention } from "./retention.js";
+import { api, IS_GECKO } from "../lib/browser-compat.js";
+import { parseTimestamps, getYouTubeVideoIdFromUrl } from "./timestamps.js";
 
-// Must match extension/background/service-worker.js's BROKER_PORT and
-// manifest.json's "externally_connectable" entry — see the comment there for
-// why this can't be derived from config at runtime.
+// Must match extension/background/service-worker.js's BROKER_PORT — port is
+// fixed (docs/PROTOCOL.md "Transport"), so this can't be derived from config
+// at runtime. Firefox only (docs/PROTOCOL.md "Page /pair").
 const BROKER_PORT = 8787;
 const PAIR_URL = `http://127.0.0.1:${BROKER_PORT}/pair`;
 
@@ -67,11 +69,42 @@ const RETENTION_DAYS_KEY = "wingpen:retentionDays"; // number of days, or null f
 const DEFAULT_RETENTION_DAYS = 30;
 const MAX_PERSISTED_MESSAGES = 200;
 
+// Client-side deadline for an in-flight request (deliverable B1). Set just
+// PAST the broker's own 120s model timeout (broker/src/model.ts,
+// MODEL_TIMEOUT_MS) so, when the broker's specific "model-unavailable" error
+// can still reach us, it wins the race and this generic deadline never fires.
+// It only fires for the case the broker's own timeout can't cover: the
+// answer that never arrives at all (socket dropped mid-request).
+const REQUEST_DEADLINE_MS = 130_000;
+// How often the panel checks that the service worker instance which
+// accepted the current request is still the same one (deliverable B4).
+const WORKER_HEARTBEAT_MS = 5_000;
+
 const MAIN_BUTTON_LABELS = {
   video: "Résumer cette vidéo",
   article: "Résumer cet article",
   page: "Résumer cette page",
 };
+
+// Fixed file list for the code fingerprint (deliverable C1) — order and
+// paths MUST stay identical to scripts/stamp.sh's FILES array, or the two
+// hashes computed independently (one from what the browser actually loaded,
+// one from disk) stop being comparable, defeating the whole point.
+const FINGERPRINT_FILES = [
+  "background/service-worker.js",
+  "content/detect.js",
+  "content/extract.js",
+  "lib/browser-compat.js",
+  "manifest.json",
+  "options.css",
+  "options.html",
+  "options.js",
+  "panel/panel.css",
+  "panel/panel.html",
+  "panel/panel.js",
+  "panel/retention.js",
+  "panel/timestamps.js",
+];
 
 const els = {
   status: document.getElementById("status"),
@@ -90,12 +123,28 @@ const els = {
   send: document.getElementById("send"),
   cancel: document.getElementById("cancel"),
   eraseConversation: document.getElementById("eraseConversation"),
+  buildInfo: document.getElementById("buildInfo"),
 };
 
 /** @type {Array<{id: string, role: 'user'|'assistant'|'system', text: string}>} */
 let conversation = [];
 let activeRequestId = null;
 let prompts = [];
+
+// Replay payloads for the "J'ai relancé, réessayer" recovery button
+// (deliverable D1) — keyed by request id, in-memory only (never persisted to
+// chrome.storage.local: it can hold page content, same reasoning as why
+// context.url is kept out of the conversation elsewhere in this file). Only
+// kept for a request that ended in "auth-required": any other terminal
+// outcome drops its entry, so this never grows unbounded over a long session.
+const pendingRetries = new Map();
+
+// Request-watch state (deliverables B1 + B4) — armed by startRequestWatch()
+// right after a request is sent, disarmed by clearRequestWatch() whenever
+// setStreamingUi(false) runs (done/error/cancel/disconnect all funnel there).
+let requestDeadlineTimer = null;
+let requestHeartbeatTimer = null;
+let requestWorkerInstanceId = null; // service worker instance that accepted the current request, or null
 
 // Page detection state (deliverable 1) — see the comment block above.
 let currentTabId = null;
@@ -128,8 +177,8 @@ async function init() {
   conversation = await loadConversation();
   renderAll();
 
-  els.openOptions.addEventListener("click", () => chrome.runtime.openOptionsPage());
-  els.connectWingpen.addEventListener("click", () => chrome.tabs.create({ url: PAIR_URL }));
+  els.openOptions.addEventListener("click", () => api.runtime.openOptionsPage());
+  els.connectWingpen.addEventListener("click", () => api.tabs.create({ url: PAIR_URL }));
   els.mainAction.addEventListener("click", () => summarize());
   els.activateSite.addEventListener("click", activateOnThisSite);
   els.send.addEventListener("click", sendChat);
@@ -148,19 +197,31 @@ async function init() {
     }
   });
 
-  chrome.runtime.onMessage.addListener(onRuntimeMessage);
-  chrome.tabs.onActivated.addListener(({ tabId }) => {
+  api.runtime.onMessage.addListener(onRuntimeMessage);
+  api.tabs.onActivated.addListener(({ tabId }) => {
     currentTabId = tabId;
     redetectTabFromMetadata(tabId);
   });
 
-  const status = await chrome.runtime.sendMessage({ type: "wingpen:panel-ready" }).catch(() => null);
+  const status = await api.runtime.sendMessage({ type: "wingpen:panel-ready" }).catch(() => null);
   applyStatus(status?.state ?? "unknown");
   requestPrompts();
 
   try {
     currentTabId = await activeTabId();
-    await redetectTab(currentTabId);
+    // Reading the page on panel load is legitimate when the panel is loading
+    // BECAUSE the user just clicked the icon. It is not when the browser
+    // restored a panel left open from the previous session: that would be a
+    // page read with nobody asking, which rule 5 forbids. Chrome gives us no
+    // signal on the panel side, so the service worker stamps the browser's
+    // startup and we stay on metadata-only classification for a few seconds
+    // after it. Cost of the fallback: on an article the main button reads
+    // "Résumer" instead of "Résumer cet article" until the first click.
+    if (await openedFromGesture()) {
+      await redetectTab(currentTabId);
+    } else {
+      await redetectTabFromMetadata(currentTabId);
+    }
   } catch {
     currentTabId = null;
     updateMainButton();
@@ -168,6 +229,39 @@ async function init() {
   }
 
   await drainPendingAction();
+  await showBuildInfo();
+}
+
+// --- Build fingerprint (deliverable C1) ------------------------------------
+//
+// Twice in one day, testing continued against a stale unpacked build with
+// nothing on screen to reveal it. This computes a hash of the code the
+// browser ACTUALLY loaded (fetched at runtime via chrome.runtime.getURL, not
+// read from disk) so a mismatch with `scripts/stamp.sh`'s output — run
+// against the files on disk — is visible in one glance, no devtools needed.
+
+async function showBuildInfo() {
+  els.buildInfo.textContent = "";
+  const version = api.runtime.getManifest().version;
+  const fingerprint = await computeCodeFingerprint().catch(() => null);
+  els.buildInfo.textContent = fingerprint ? `v${version} · ${fingerprint}` : `v${version} · empreinte indisponible`;
+}
+
+async function computeCodeFingerprint() {
+  const buffers = await Promise.all(
+    FINGERPRINT_FILES.map((path) => fetch(api.runtime.getURL(path)).then((res) => res.arrayBuffer())),
+  );
+  let totalLength = 0;
+  for (const buf of buffers) totalLength += buf.byteLength;
+  const concatenated = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const buf of buffers) {
+    concatenated.set(new Uint8Array(buf), offset);
+    offset += buf.byteLength;
+  }
+  const digest = await crypto.subtle.digest("SHA-256", concatenated);
+  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return hex.slice(0, 7);
 }
 
 function onRuntimeMessage(message) {
@@ -213,6 +307,7 @@ function handleBrokerMessage(message) {
       break;
     }
     case "done": {
+      pendingRetries.delete(message.id);
       const msg = conversation.find((m) => m.id === message.id);
       if (msg) {
         msg.streaming = false;
@@ -223,15 +318,29 @@ function handleBrokerMessage(message) {
       break;
     }
     case "error": {
+      // docs/PROTOCOL.md "Disponibilité du fournisseur": an older broker that
+      // doesn't know provider.status answers some generic error for this id
+      // instead of provider.status-result — show nothing for it, per spec.
+      if (message.id === providerStatusRequestId) {
+        providerStatusRequestId = null;
+        break;
+      }
+      const text = describeBrokerError(message);
+      const authRequired = message.code === "auth-required";
+      if (!authRequired) pendingRetries.delete(message.id);
+      // Clear activeRequestId BEFORE rendering: buildAuthRecoveryBlock()
+      // reads it to decide whether the retry button starts enabled, and
+      // this terminal error is exactly what should free it up again.
+      if (activeRequestId === message.id) setStreamingUi(false);
       const msg = conversation.find((m) => m.id === message.id);
       if (msg) {
         msg.streaming = false;
-        msg.text = msg.text || `⚠ ${message.message || message.code}`;
+        msg.text = msg.text || text;
+        msg.authRequired = authRequired;
         renderMessage(msg);
       } else {
-        addMessage({ id: message.id, role: "system", text: `⚠ ${message.message || message.code}` });
+        addMessage({ id: message.id, role: "system", text, authRequired });
       }
-      if (activeRequestId === message.id) setStreamingUi(false);
       persistConversation();
       break;
     }
@@ -240,10 +349,61 @@ function handleBrokerMessage(message) {
       renderPromptOptions();
       break;
     }
+    case "provider.status-result": {
+      if (message.id !== providerStatusRequestId) break; // stale/unrelated — ignore
+      providerStatusRequestId = null;
+      providerStatusSuffix = formatProviderStatus(message);
+      renderStatusLabel();
+      break;
+    }
     default:
       break;
   }
 }
+
+/** Maps a terminal broker `error` to a French message that names its own
+ * remedy (deliverable B5, third banner: "broker reachable but the model
+ * failed"). The other two B5 causes — broker unreachable, no pairing token —
+ * are connection-level states handled separately by applyConnectionBanner();
+ * this one is per-request, so it renders inline in the conversation like any
+ * other error, not as a banner. */
+function describeBrokerError(message) {
+  // docs/PROTOCOL.md "Limites côté broker" — the broker sends this fixed id,
+  // then closes the connection with code 1009; the normal reconnect flow
+  // (backoff/alarm) takes over from there, same as any other drop.
+  if (message.id === "oversized") {
+    return "⚠ Le message envoyé dépassait la taille maximale acceptée par le broker (256 Ko) ; la connexion a été fermée. Réessayez avec un contenu plus court.";
+  }
+  switch (message.code) {
+    case "model-unavailable":
+      // Covers both the broker's own 120s model-call timeout and a model
+      // that can't be reached at all (broker/src/model.ts, MODEL_TIMEOUT_MS)
+      // — the broker itself is fine, the model is the problem.
+      return `⚠ Le modèle ne répond pas (${message.message || "indisponible"}). Le broker fonctionne normalement ; c'est le modèle qui pose problème. Réessayez dans un instant.`;
+    case "auth-required":
+      // The actionable part (copy `claude /login`, "J'ai relancé,
+      // réessayer") is rendered separately by renderMessage() via
+      // msg.authRequired — see buildAuthRecoveryBlock() below.
+      return "⚠ La session Claude a expiré.";
+    case "cancelled":
+      return "Requête annulée.";
+    case "context-too-large":
+      return "⚠ Le contenu envoyé est trop volumineux pour le modèle.";
+    case "bad-request":
+      return `⚠ Requête invalide : ${message.message || message.code}.`;
+    default:
+      return `⚠ ${message.message || message.code}`;
+  }
+}
+
+// Current connection state, kept so a later provider.status-result (which
+// arrives asynchronously) can be folded into the status line without
+// recomputing/duplicating the connection label above it.
+let currentConnState = "unknown";
+// Short factual French text from the last provider.status-result, or "" when
+// there is nothing to add (state "ok", or no check done yet this panel
+// session) — see maybeRequestProviderStatus()/renderStatusLabel() below.
+let providerStatusSuffix = "";
 
 function applyStatus(state) {
   // A dropped connection must not leave the panel permanently locked: any
@@ -252,7 +412,15 @@ function applyStatus(state) {
     setStreamingUi(false);
   }
 
+  currentConnState = state;
+  if (state !== "connected") providerStatusSuffix = ""; // stale once disconnected
   els.status.className = `status status--${state}`;
+  renderStatusLabel();
+  applyConnectionBanner(state);
+  if (state === "connected") maybeRequestProviderStatus();
+}
+
+function renderStatusLabel() {
   const labels = {
     connected: "Connecté",
     connecting: "Connexion…",
@@ -261,21 +429,34 @@ function applyStatus(state) {
     "no-token": "Pas de jeton — voir réglages",
     unknown: "…",
   };
-  els.statusLabel.textContent = labels[state] ?? state;
-
-  applyConnectionBanner(state);
+  let text = labels[currentConnState] ?? currentConnState;
+  if (currentConnState === "connected" && providerStatusSuffix) text += ` · ${providerStatusSuffix}`;
+  els.statusLabel.textContent = text;
 }
 
 // Two states must never be confused (see the design brief for this feature):
 // "no-token" means the extension has never been paired (or the browser was
 // restarted and chrome.storage.session was wiped, see CLAUDE.md rule #1) —
-// the fix is one click. "disconnected" means we DO hold a token but the
-// broker itself isn't answering right now — the fix is starting the broker.
-// The options page's paste field remains the fallback for both; see options.js.
+// the fix differs by browser (see below). "disconnected" means we DO hold a
+// token but the broker itself isn't answering right now — the fix is
+// starting the broker. The options page's paste field remains the fallback
+// for both; see options.js.
 function applyConnectionBanner(state) {
   if (state === "no-token") {
-    els.connectionBannerText.textContent = "Wingpen n'est pas encore connecté à votre broker.";
-    els.connectWingpen.hidden = false;
+    if (IS_GECKO) {
+      // docs/PROTOCOL.md "Appairage silencieux", "Bandeau no-token" — Firefox
+      // uuid is never known in advance; the fix is the manual /pair copy.
+      els.connectionBannerText.textContent =
+        "Wingpen n'est pas encore appairé à ce broker. Ouvrez la page /pair pour copier le code, puis collez-le dans les réglages de l'extension (icône ⚙).";
+      els.connectWingpen.hidden = false;
+    } else {
+      // Chromium: an unknown id is refused before any secret is even read —
+      // there is no /pair path for it (docs/PROTOCOL.md "Chemin un clic
+      // retiré"). The only fix is adding this id broker-side.
+      els.connectionBannerText.textContent =
+        `L'identifiant de cette extension (${api.runtime.id}) n'est pas connu du broker. Ajoutez-le à allowedExtensionIds puis redémarrez le broker.`;
+      els.connectWingpen.hidden = true;
+    }
     els.connectionBanner.hidden = false;
     return;
   }
@@ -287,6 +468,56 @@ function applyConnectionBanner(state) {
     return;
   }
   els.connectionBanner.hidden = true;
+}
+
+// --- Disponibilité du fournisseur (docs/PROTOCOL.md "provider.status") ----
+//
+// Sent once per panel open, on a user gesture (opening the panel), the first
+// time this panel reaches "connected" — never from the service worker, never
+// on a timer, never again for the lifetime of this panel instance.
+
+let providerStatusRequested = false;
+let providerStatusRequestId = null;
+
+function maybeRequestProviderStatus() {
+  if (providerStatusRequested) return;
+  providerStatusRequested = true;
+  const id = newId();
+  providerStatusRequestId = id;
+  api.runtime.sendMessage({
+    type: "wingpen:client-message",
+    payload: { type: "provider.status", id },
+  });
+}
+
+// Reason codes are a closed, stable, English list read by this code only
+// (docs/PROTOCOL.md "Disponibilité du fournisseur") — never shown as-is.
+// `state: "ok"` is shown too: the point of the check is that the user sees,
+// before any click, whether the model will answer (goal 2026-09-25, Q5).
+const PROVIDER_LABEL = {
+  "claude-cli": "Claude (abonnement)",
+  "claude-api": "Claude (clé API)",
+  "ollama": "Ollama",
+};
+
+const PROVIDER_STATUS_REASON_TEXT = {
+  "ready": "prêt",
+  "logged-in": "session ouverte",
+  "no-key": "aucune clé API enregistrée",
+  "key-unverified": "clé API enregistrée, non vérifiée",
+  "cli-missing": "exécutable claude introuvable",
+  "not-logged-in": "session Claude Code non authentifiée",
+  "probe-failed": "état indéterminé",
+  "ollama-unreachable": "Ollama ne répond pas",
+  "model-missing": "modèle configuré absent d'Ollama",
+  "no-model-installed": "aucun modèle installé dans Ollama",
+};
+
+function formatProviderStatus(message) {
+  const label = PROVIDER_LABEL[message.provider] ?? "Modèle";
+  const reasonText =
+    PROVIDER_STATUS_REASON_TEXT[message.reason] ?? (message.state === "ok" ? "prêt" : "état inconnu");
+  return `${label} : ${reasonText}`;
 }
 
 // --- Chat ---------------------------------------------------------------
@@ -339,18 +570,34 @@ async function sendChat() {
   setStreamingUi(true);
   persistConversation();
 
-  chrome.runtime.sendMessage({
-    type: "wingpen:client-message",
-    payload: { type: "chat", id, text, context },
-  });
+  pendingRetries.set(id, { type: "chat", text, context });
+  const ack = await api.runtime
+    .sendMessage({ type: "wingpen:client-message", payload: { type: "chat", id, text, context } })
+    .catch(() => null);
+  startRequestWatch(id, ack?.workerInstanceId ?? null);
 }
 
+// Cancelling clears the in-flight state right away rather than waiting on the
+// broker's "error"/cancelled reply (deliverable B1): that reply is exactly
+// what might never arrive if we're cancelling because the connection is
+// stuck. The protocol does define a "cancel" message (docs/PROTOCOL.md), so
+// it is still sent best-effort in case the broker is in fact listening.
 function cancelActive() {
   if (!activeRequestId) return;
-  chrome.runtime.sendMessage({
+  const id = activeRequestId;
+  pendingRetries.delete(id);
+  api.runtime.sendMessage({
     type: "wingpen:client-message",
-    payload: { type: "cancel", id: newId(), target: activeRequestId },
+    payload: { type: "cancel", id: newId(), target: id },
   });
+  const msg = conversation.find((m) => m.id === id);
+  if (msg) {
+    msg.streaming = false;
+    if (!msg.text) msg.text = "Requête annulée.";
+    renderMessage(msg);
+  }
+  setStreamingUi(false);
+  persistConversation();
 }
 
 // --- Erase conversation (deliverable "historique — effacement") -----------
@@ -390,16 +637,161 @@ async function eraseConversation() {
   setStreamingUi(false);
 
   conversation = [];
-  await chrome.storage.local.remove(STORAGE_KEY);
+  pendingRetries.clear();
+  await api.storage.local.remove(STORAGE_KEY);
   persistConversation();
   renderAll();
+}
+
+// --- Auth recovery (deliverable D1) ---------------------------------------
+//
+// The broker's `auth-required` error (docs/PROTOCOL.md, "Fournisseur de
+// modèle") means the local `claude` CLI session expired. We deliberately do
+// NOT relay or drive the interactive `claude /login` flow (that decision is
+// final, see the task brief) — the panel only makes the manual fix as cheap
+// as possible: the exact command to copy, and a button that replays the
+// request that just failed once the user says they ran it.
+
+/** Builds the actionable block appended under an assistant/system message
+ * whose terminal error was `auth-required`. No innerHTML — real DOM nodes,
+ * same discipline as linkifyTimestamps() above. */
+function buildAuthRecoveryBlock(msg) {
+  const block = document.createElement("div");
+  block.className = "recovery-block";
+
+  const commandRow = document.createElement("div");
+  commandRow.className = "recovery-command";
+  const code = document.createElement("code");
+  code.textContent = "claude /login";
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "recovery-copy";
+  copyBtn.textContent = "Copier";
+  copyBtn.addEventListener("click", () => copyLoginCommand(copyBtn));
+  commandRow.appendChild(code);
+  commandRow.appendChild(copyBtn);
+  block.appendChild(commandRow);
+
+  // Only offered when we still hold the payload to replay — lost across a
+  // panel reload (pendingRetries is in-memory only), in which case the copy
+  // button above remains the fallback: rerun the question by hand.
+  if (pendingRetries.has(msg.id)) {
+    const retryBtn = document.createElement("button");
+    retryBtn.type = "button";
+    retryBtn.className = "recovery-retry";
+    retryBtn.textContent = "J'ai relancé, réessayer";
+    retryBtn.disabled = !!activeRequestId;
+    retryBtn.addEventListener("click", () => retryRequest(msg));
+    block.appendChild(retryBtn);
+  }
+
+  return block;
+}
+
+async function copyLoginCommand(button) {
+  const original = button.textContent;
+  try {
+    await navigator.clipboard.writeText("claude /login");
+    button.textContent = "Copié !";
+  } catch {
+    button.textContent = "Échec de la copie";
+  }
+  setTimeout(() => {
+    button.textContent = original;
+  }, 1500);
+}
+
+/** Replays the request that ended in `auth-required`, reusing its own id —
+ * by the time this can be clicked that id already reached a terminal state,
+ * so the broker/service-worker no longer track anything under it. Sending it
+ * again goes through the exact same path (sendToBroker's one-slot pending
+ * queue, panel.js's 130s request-watch deadline) as any first-time request —
+ * no separate replay machinery (task brief, D1). */
+async function retryRequest(msg) {
+  if (activeRequestId) return;
+  const payload = pendingRetries.get(msg.id);
+  if (!payload) return;
+
+  msg.authRequired = false;
+  msg.text = "";
+  msg.streaming = true;
+  renderMessage(msg);
+
+  activeRequestId = msg.id;
+  setStreamingUi(true);
+  persistConversation();
+
+  const ack = await api.runtime
+    .sendMessage({ type: "wingpen:client-message", payload: { ...payload, id: msg.id } })
+    .catch(() => null);
+  startRequestWatch(msg.id, ack?.workerInstanceId ?? null);
 }
 
 function setStreamingUi(streaming) {
   els.send.disabled = streaming;
   els.mainAction.disabled = streaming;
   els.cancel.hidden = !streaming;
-  if (!streaming) activeRequestId = null;
+  if (!streaming) {
+    activeRequestId = null;
+    clearRequestWatch();
+  }
+}
+
+// --- Request watch (deliverables B1 + B4) ---------------------------------
+//
+// Armed right after a request is sent to the background, disarmed the moment
+// streaming stops for any reason (done, error, cancel, or a disconnect — see
+// setStreamingUi). Two independent guards run in parallel:
+//   - a deadline, just past the broker's own 120s model timeout, for the
+//     case where no reply — not even the broker's own error — ever arrives;
+//   - a heartbeat that notices the service worker instance changed under us,
+//     which means it was killed by the MV3 lifecycle mid-request and nothing
+//     is coming for this id no matter how long we wait.
+
+function startRequestWatch(id, workerInstanceId) {
+  clearRequestWatch();
+  requestWorkerInstanceId = workerInstanceId;
+  requestDeadlineTimer = setTimeout(() => onRequestDeadline(id), REQUEST_DEADLINE_MS);
+  requestHeartbeatTimer = setInterval(() => checkWorkerAlive(id), WORKER_HEARTBEAT_MS);
+}
+
+function clearRequestWatch() {
+  clearTimeout(requestDeadlineTimer);
+  clearInterval(requestHeartbeatTimer);
+  requestDeadlineTimer = null;
+  requestHeartbeatTimer = null;
+  requestWorkerInstanceId = null;
+}
+
+async function checkWorkerAlive(id) {
+  if (activeRequestId !== id) return;
+  const status = await api.runtime.sendMessage({ type: "wingpen:get-status" }).catch(() => null);
+  if (!status || activeRequestId !== id) return;
+  if (
+    requestWorkerInstanceId &&
+    status.workerInstanceId &&
+    status.workerInstanceId !== requestWorkerInstanceId
+  ) {
+    failActiveRequest(id, "La requête a été interrompue (le service en arrière-plan a redémarré), relancez-la.");
+  }
+}
+
+function onRequestDeadline(id) {
+  if (activeRequestId !== id) return;
+  failActiveRequest(id, "Aucune réponse après 130 s. Le broker ne répond pas ; vérifiez qu'il tourne, puis réessayez.");
+}
+
+function failActiveRequest(id, text) {
+  const msg = conversation.find((m) => m.id === id);
+  if (msg) {
+    msg.streaming = false;
+    if (!msg.text) msg.text = `⚠ ${text}`;
+    renderMessage(msg);
+  } else {
+    addMessage({ id: newId(), role: "system", text: `⚠ ${text}` });
+  }
+  if (activeRequestId === id) setStreamingUi(false);
+  persistConversation();
 }
 
 // --- Page detection (deliverable 1) --------------------------------------
@@ -458,6 +850,24 @@ function applyDetectedContext(context) {
 
 /** Re-runs detection for `tabId`. Never throws — degrades to the generic
  * state (and, when possible, the "activer sur ce site" affordance) instead. */
+/** How long after the browser starts a loading panel is assumed to be a
+ * restored one rather than a freshly clicked one. Chrome restores side panels
+ * within a second or two of startup; ten seconds covers a cold machine without
+ * swallowing a deliberate click, which realistically comes later than that. */
+const RESTORE_WINDOW_MS = 10_000;
+
+/** False when this panel is most likely one the browser restored at startup.
+ * Fails closed: any error reading the stamp means we do NOT read the page. */
+async function openedFromGesture() {
+  try {
+    const { browserStartedAt } = await api.storage.session.get("browserStartedAt");
+    if (typeof browserStartedAt !== "number") return true;
+    return Date.now() - browserStartedAt > RESTORE_WINDOW_MS;
+  } catch {
+    return false;
+  }
+}
+
 async function redetectTab(tabId) {
   try {
     const context = await extractFromTab(tabId);
@@ -467,7 +877,7 @@ async function redetectTab(tabId) {
     if (err instanceof NoAccessError) {
       knownOrigin = err.origin;
       const pattern = `${err.origin}/*`;
-      const alreadyGranted = await chrome.permissions.contains({ origins: [pattern] }).catch(() => false);
+      const alreadyGranted = await api.permissions.contains({ origins: [pattern] }).catch(() => false);
       // If we already hold this permission, extraction failed for some other
       // reason (a chrome:// page, a PDF viewer…) — nothing to "activate".
       if (!alreadyGranted) showActivateAffordance(err.origin);
@@ -486,7 +896,7 @@ async function redetectTab(tabId) {
 async function redetectTabFromMetadata(tabId) {
   let tab;
   try {
-    tab = await chrome.tabs.get(tabId);
+    tab = await api.tabs.get(tabId);
   } catch {
     tab = null;
   }
@@ -509,7 +919,7 @@ async function redetectTabFromMetadata(tabId) {
 async function activateOnThisSite() {
   if (!knownOrigin) return;
   const pattern = `${knownOrigin}/*`;
-  const granted = await chrome.permissions.request({ origins: [pattern] }).catch(() => false);
+  const granted = await api.permissions.request({ origins: [pattern] }).catch(() => false);
   if (!granted) return;
   hideActivateAffordance();
   if (currentTabId != null) await redetectTab(currentTabId);
@@ -600,20 +1010,26 @@ async function summarize() {
   // a neutral fallback rather than reaching for context.url.
   const description = (context.title || "").trim() || "cette page";
   addMessage({ id: `${id}-u`, role: "user", text: `${label} : ${description}` });
-  addMessage({ id, role: "assistant", text: "", streaming: true });
+  // videoId only — never context.url (rule #1: chrome.storage.local is
+  // unencrypted, and a URL can carry a session token; a bare video id can't).
+  // It's what lets a rendered timestamp be tied back to "the video this
+  // summary was made from" without ever persisting that video's URL.
+  const videoId = context.kind === "youtube" ? context.videoId : undefined;
+  addMessage({ id, role: "assistant", text: "", streaming: true, videoId });
 
   activeRequestId = id;
   setStreamingUi(true);
   persistConversation();
 
-  chrome.runtime.sendMessage({
-    type: "wingpen:client-message",
-    payload: { type: "summarize", id, context, length: "medium" },
-  });
+  pendingRetries.set(id, { type: "summarize", context, length: "medium" });
+  const ack = await api.runtime
+    .sendMessage({ type: "wingpen:client-message", payload: { type: "summarize", id, context, length: "medium" } })
+    .catch(() => null);
+  startRequestWatch(id, ack?.workerInstanceId ?? null);
 }
 
 async function activeTabId() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const [tab] = await api.tabs.query({ active: true, currentWindow: true });
   if (!tab || !tab.id) throw new Error("aucun onglet actif");
   return tab.id;
 }
@@ -645,9 +1061,14 @@ function looksLikeAccessDenied(err) {
 async function extractFromTab(tabId) {
   let results;
   try {
-    results = await chrome.scripting.executeScript({
+    results = await api.scripting.executeScript({
       target: { tabId },
-      files: ["content/extract.js"],
+      // Leading slash, and it matters: Chrome resolves an injected file path
+      // against the extension root, Firefox against the calling document — the
+      // panel lives in panel/, so "content/extract.js" became
+      // moz-extension://…/panel/content/extract.js and failed to load.
+      // Measured in Firefox on 2026-09-20. Root-relative works on both.
+      files: ["/content/extract.js"],
     });
   } catch (err) {
     const origin = extractOriginFromError(err);
@@ -666,7 +1087,7 @@ async function extractFromTab(tabId) {
 // au chargement, jamais en boucle, jamais sur une autre vidéo. Ce n'est pas un
 // parcours automatisé : c'est le geste de l'utilisateur, outillé.
 async function openYouTubeTranscript(tabId) {
-  const results = await chrome.scripting.executeScript({
+  const results = await api.scripting.executeScript({
     target: { tabId },
     func: async () => {
       const button = [...document.querySelectorAll("button")].find((el) =>
@@ -704,14 +1125,14 @@ async function openYouTubeTranscript(tabId) {
  * whichever comes first — reading it here removes it, so the other caller
  * finds nothing and no-ops. */
 async function drainPendingAction() {
-  const data = await chrome.storage.session.get(PENDING_ACTION_KEY);
+  const data = await api.storage.session.get(PENDING_ACTION_KEY);
   const pending = data[PENDING_ACTION_KEY];
   if (!pending) return;
-  await chrome.storage.session.remove(PENDING_ACTION_KEY);
+  await api.storage.session.remove(PENDING_ACTION_KEY);
   runAct(pending);
 }
 
-function runAct(pending) {
+async function runAct(pending) {
   const { action, label, params, selectionText } = pending;
   if (!selectionText) return;
   if (activeRequestId) {
@@ -727,10 +1148,11 @@ function runAct(pending) {
   setStreamingUi(true);
   persistConversation();
 
-  chrome.runtime.sendMessage({
-    type: "wingpen:client-message",
-    payload: { type: "act", id, action, text: selectionText, params },
-  });
+  pendingRetries.set(id, { type: "act", action, text: selectionText, params });
+  const ack = await api.runtime
+    .sendMessage({ type: "wingpen:client-message", payload: { type: "act", id, action, text: selectionText, params } })
+    .catch(() => null);
+  startRequestWatch(id, ack?.workerInstanceId ?? null);
 }
 
 function truncateForDisplay(text, max = 220) {
@@ -741,7 +1163,7 @@ function truncateForDisplay(text, max = 220) {
 // --- Prompt library ---------------------------------------------------
 
 function requestPrompts() {
-  chrome.runtime.sendMessage({
+  api.runtime.sendMessage({
     type: "wingpen:client-message",
     payload: { type: "prompts.list", id: newId() },
   });
@@ -779,7 +1201,7 @@ function saveCurrentAsPrompt() {
   const name = window.prompt("Nom de ce prompt ?");
   if (!name) return;
 
-  chrome.runtime.sendMessage({
+  api.runtime.sendMessage({
     type: "wingpen:client-message",
     payload: { type: "prompts.save", id: newId(), prompt: { name, body } },
   });
@@ -812,7 +1234,70 @@ function renderMessage(msg, { append = false } = {}) {
   }
   node.className = `message message--${msg.role}${msg.streaming ? " message--streaming" : ""}`;
   node.innerHTML = renderSafeMarkdown(msg.text);
+  // Only a YouTube-context assistant message carries a videoId (set in
+  // summarize()) — an ordinary article summary that happens to contain
+  // "[1:23]" has none, so its timestamps stay plain text (deliverable 4).
+  if (msg.role === "assistant" && msg.videoId) linkifyTimestamps(node, msg.videoId);
+  if (msg.authRequired) node.appendChild(buildAuthRecoveryBlock(msg));
   els.messages.scrollTop = els.messages.scrollHeight;
+}
+
+/**
+ * Walks a rendered message's text nodes and turns `[mm:ss]`/`[h:mm:ss]`
+ * timestamps into clickable <button>s. Built as real DOM nodes
+ * (createElement/textContent), never via string-concatenated HTML — the
+ * text driving this is model output, and CLAUDE.md rule #3 says page/model
+ * content is data, never markup, full stop.
+ */
+function linkifyTimestamps(container, videoId) {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  let n;
+  while ((n = walker.nextNode())) textNodes.push(n);
+
+  for (const textNode of textNodes) {
+    const tokens = parseTimestamps(textNode.data);
+    if (tokens.length === 1 && tokens[0].type === "text") continue; // nothing to link
+
+    const fragment = document.createDocumentFragment();
+    for (const token of tokens) {
+      if (token.type === "text") {
+        fragment.appendChild(document.createTextNode(token.value));
+        continue;
+      }
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "timestamp-link";
+      button.textContent = token.raw;
+      button.title = "Aller à cet instant de la vidéo";
+      button.addEventListener("click", () => seekActiveVideoTab(videoId, token.seconds));
+      fragment.appendChild(button);
+    }
+    textNode.parentNode.replaceChild(fragment, textNode);
+  }
+}
+
+// Seeks the <video> element of the CURRENT active tab — but only when a real
+// click just happened (this is only ever called from a "click" listener
+// above) AND that tab is showing the same video the summary was made from.
+// CLAUDE.md rule #5 ("la règle du geste"): this tools a gesture the user just
+// made, it never fires on its own, never on a timer, never on another tab.
+async function seekActiveVideoTab(videoId, seconds) {
+  try {
+    const [tab] = await api.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id || getYouTubeVideoIdFromUrl(tab.url) !== videoId) return;
+    await api.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: (t) => {
+        const video = document.querySelector("video");
+        if (video) video.currentTime = t;
+      },
+      args: [seconds],
+    });
+  } catch {
+    // Tab closed, no more permission, no <video> on the page yet — a seek is
+    // best-effort, never worth surfacing an error for.
+  }
 }
 
 /**
@@ -841,7 +1326,7 @@ function escapeHtml(str) {
 // --- Persistence ----------------------------------------------------------
 
 async function loadConversation() {
-  const data = await chrome.storage.local.get([STORAGE_KEY, ATTACH_PAGE_KEY, RETENTION_DAYS_KEY]);
+  const data = await api.storage.local.get([STORAGE_KEY, ATTACH_PAGE_KEY, RETENTION_DAYS_KEY]);
   attachPagePreference = typeof data[ATTACH_PAGE_KEY] === "boolean" ? data[ATTACH_PAGE_KEY] : null;
   const retentionDays =
     data[RETENTION_DAYS_KEY] === null || typeof data[RETENTION_DAYS_KEY] === "number"
@@ -853,13 +1338,13 @@ async function loadConversation() {
     // Persist the migration (stamped timestamps) and the expiry (dropped
     // messages) right away, so a crash before the next save doesn't re-show
     // messages that should have expired.
-    chrome.storage.local.set({ [STORAGE_KEY]: filtered });
+    api.storage.local.set({ [STORAGE_KEY]: filtered });
   }
   return filtered;
 }
 
 function persistConversation() {
-  chrome.storage.local.set({ [STORAGE_KEY]: conversation, [ATTACH_PAGE_KEY]: attachPagePreference });
+  api.storage.local.set({ [STORAGE_KEY]: conversation, [ATTACH_PAGE_KEY]: attachPagePreference });
 }
 
 function newId() {

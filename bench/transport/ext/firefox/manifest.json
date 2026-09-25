@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "wingpen-transport-bench",
+  "version": "0.0.1",
+  "description": "Isolated prototype, never wired into Wingpen. Measures WS vs Native Messaging transport latency.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "wingpen-bench@localhost"
+    }
+  },
+  "permissions": ["nativeMessaging"],
+  "background": {
+    "scripts": ["bench-config.js", "background.js"]
+  },
+  "content_security_policy": {
+    "extension_pages": "default-src 'self'; connect-src ws://127.0.0.1:18787 'self'"
+  }
+}

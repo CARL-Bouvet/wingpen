@@ -83,6 +83,82 @@ select {
   font-size: 12px;
   color: #d5495a;
 }
+
+.provider-description {
+  margin: 2px 0 0 24px;
+  font-size: 12.5px;
+  color: #666;
+}
+
+.provider-configured {
+  margin-left: 24px;
+  font-size: 12px;
+  color: #2fb757;
+}
+
+.apikey-field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 0 24px;
+}
+
+.apikey-field input[type="password"] {
+  flex: 1;
+  min-width: 180px;
+}
+
+.apikey-field button {
+  padding: 6px 12px;
+  font-size: 12.5px;
+}
+
+.apikey-clear {
+  background: #fff;
+  color: #a33;
+  border: 1px solid #e0b0b0;
+}
+
+.apikey-clear:hover {
+  background: #fdeeee;
+}
+
+.test-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0 0 24px;
+}
+
+.test-button {
+  padding: 6px 12px;
+  font-size: 12.5px;
+  background: #fff;
+  color: #1f2430;
+  border: 1px solid #d8d8de;
+}
+
+.test-button:hover {
+  background: #f4f4f6;
+}
+
+.test-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.test-result {
+  font-size: 12.5px;
+}
+
+.test-result--ok {
+  color: #2fb757;
+}
+
+.test-result--error {
+  color: #d5495a;
+}
 .site-toggles {
   list-style: none;
   margin: 0;

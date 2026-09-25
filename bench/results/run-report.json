@@ -1,0 +1,150 @@
+{
+  "generatedAt": "2026-09-24T23:24:48.591Z",
+  "braveWs": {
+    "meta": {
+      "browser": "brave",
+      "transport": "ws",
+      "startedAt": "2026-09-24T23:24:49.150Z",
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+      "updatedAt": "2026-09-24T23:24:52.981Z",
+      "nmLocation": "none",
+      "nmProbeLog": []
+    },
+    "coldConnect": {
+      "samples": [
+        3.100000001490116,
+        2.400000000372529,
+        2.400000000372529,
+        2.699999999254942,
+        3.5,
+        3.199999999254942,
+        4.5,
+        1.599999999627471,
+        1.599999999627471,
+        1.799999998882413
+      ],
+      "n": 10,
+      "p50": 2.699999999254942,
+      "p95": 4.5,
+      "p99": 4.5,
+      "min": 1.599999999627471,
+      "max": 4.5
+    },
+    "roundTrip": [
+      {
+        "startedAt": 1790292290191,
+        "endedAt": 1790292290309,
+        "n": 1000,
+        "p50": 0.09999999962747097,
+        "p95": 0.2000000011175871,
+        "p99": 0.6999999992549419,
+        "min": 0,
+        "max": 3.800000000745058
+      },
+      {
+        "startedAt": 1790292290511,
+        "endedAt": 1790292290611,
+        "n": 1000,
+        "p50": 0.09999999962747097,
+        "p95": 0.2000000011175871,
+        "p99": 0.30000000074505806,
+        "min": 0,
+        "max": 0.6999999992549419
+      },
+      {
+        "startedAt": 1790292290813,
+        "endedAt": 1790292290915,
+        "n": 1000,
+        "p50": 0.09999999962747097,
+        "p95": 0.2000000011175871,
+        "p99": 0.40000000037252903,
+        "min": 0,
+        "max": 1.199999999254942
+      }
+    ],
+    "streaming": [
+      {
+        "elapsed": 63.899999998509884,
+        "bytes": 300000,
+        "count": 5000,
+        "throughputBytesPerSec": 4694835.680860654
+      },
+      {
+        "elapsed": 60.5,
+        "bytes": 300000,
+        "count": 5000,
+        "throughputBytesPerSec": 4958677.685950413
+      },
+      {
+        "elapsed": 54.09999999962747,
+        "bytes": 300000,
+        "count": 5000,
+        "throughputBytesPerSec": 5545286.506507685
+      }
+    ],
+    "upload": [
+      {
+        "elapsed": 12,
+        "ackBytes": 1048576,
+        "error": null
+      },
+      {
+        "elapsed": 9.099999999627471,
+        "ackBytes": 1048576,
+        "error": null
+      },
+      {
+        "elapsed": 10.800000000745058,
+        "ackBytes": 1048576,
+        "error": null
+      },
+      {
+        "elapsed": 8.599999999627471,
+        "ackBytes": 1048576,
+        "error": null
+      },
+      {
+        "elapsed": 9.599999999627471,
+        "ackBytes": 1048576,
+        "error": null
+      }
+    ],
+    "idle": {
+      "status": "pending",
+      "startedAt": "2026-09-24T23:24:52.981Z"
+    },
+    "errors": [],
+    "cpuRss": [
+      {
+        "samples": 2,
+        "pcpuAvg": 35.599999999999994,
+        "pcpuMax": 36.8,
+        "rssKbAvg": 242468,
+        "rssKbMax": 242476
+      },
+      {
+        "samples": 1,
+        "pcpuAvg": 28.7,
+        "pcpuMax": 28.7,
+        "rssKbAvg": 242476,
+        "rssKbMax": 242476
+      },
+      {
+        "samples": 1,
+        "pcpuAvg": 24.6,
+        "pcpuMax": 24.6,
+        "rssKbAvg": 242480,
+        "rssKbMax": 242480
+      }
+    ]
+  },
+  "braveNm": {
+    "status": "blocked",
+    "reason": "Native Messaging host manifest not honored at either the profile-dir or the real user-config location — see nmProbeLog",
+    "nmLocation": "none",
+    "nmProbeLog": [
+      "profile-location probe: coldConnectSamples=0, idle.status=n/a, errors=[]",
+      "real-user-config probe: coldConnectSamples=0, idle.status=pending, exitedEarly=false, logTail="
+    ]
+  }
+}

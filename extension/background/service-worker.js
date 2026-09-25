@@ -5,19 +5,22 @@
 // only copy: the service worker can be killed by the browser at any moment
 // (idle timeout, MV3 lifecycle), so it only relays messages. The panel is
 // responsible for persisting the conversation (chrome.storage.local).
+//
+// Runs as a background page in both Chrome (manifest.json,
+// "background.service_worker") and Firefox (manifest.firefox.json,
+// "background.scripts" + "type":"module") — same file either way, see
+// scripts/build.sh. All chrome.* calls below go through `api` (see
+// lib/browser-compat.js) so this file works unmodified on both.
 
-// The broker's port is configurable server-side (config.json "port"), but
-// manifest.json's "externally_connectable.matches" cannot take a dynamic
-// value — Chrome only accepts a literal match pattern there. So this port is
-// hardcoded in exactly two places, kept equal by convention: here, and
-// manifest.json's "externally_connectable" entry. A broker running on a
-// non-default port breaks one-click pairing; see docs/PROTOCOL.md.
+import { api } from "../lib/browser-compat.js";
+
+// Amendement 2026-09-25 (docs/PROTOCOL.md "Transport") — port fixed at 8787
+// for the extension: neither WS_URL below nor the manifests' connect-src CSP
+// can take a variable, so this port is hardcoded here and in both manifests,
+// kept equal by convention. A broker on another port is unreachable, manual
+// paste included; the broker no longer reads a "port" config key either.
 const BROKER_PORT = 8787;
 const WS_URL = `ws://127.0.0.1:${BROKER_PORT}/ws`;
-// Prefix an external sender's URL must start with to be trusted by
-// onMessageExternal below — checked in addition to (not instead of)
-// manifest.json's "externally_connectable" match list.
-const PAIR_ORIGIN_PREFIX = `http://127.0.0.1:${BROKER_PORT}/`;
 const PROTOCOL_VERSION = 1;
 const RECONNECT_ALARM = "wingpen-reconnect";
 const MAX_BACKOFF_MS = 30000;
@@ -25,6 +28,20 @@ const MAX_BACKOFF_MS = 30000;
 // so the client — not the server closing the socket first — is the one to
 // report "handshake timeout" as a distinct state.
 const HELLO_TIMEOUT_MS = 2500;
+// How long a single request is held in memory while the socket is down
+// before it is dropped with an explicit error (deliverable B2). Bounded on
+// purpose: silently queueing forever would just move the hang from "no
+// connection" to "connection came back an hour later with a stale request".
+const PENDING_REQUEST_TIMEOUT_MS = 15000;
+
+// Identifies THIS instantiation of the service worker script. MV3 can kill
+// and re-run this whole file at any time, which resets every module-level
+// `let` below — including this one, to a fresh random value. The panel
+// captures the id in place at request-send time and compares it against
+// later reads (see panel.js's request-watch) to tell "the broker is just
+// slow" apart from "the service worker died mid-request, nothing is coming"
+// (deliverable B4).
+const WORKER_INSTANCE_ID = crypto.randomUUID();
 
 // Key for the "act on selection" stash — see the context menu block below.
 // chrome.storage.SESSION only: the stashed text is the user's private
@@ -48,28 +65,69 @@ let ws = null;
 let wsState = "disconnected"; // disconnected | connecting | handshaking | connected
 let backoffMs = 1000;
 let helloTimeoutId = null;
+// At most one request held while reconnecting (deliverable B2) —
+// { payload, timeoutId }, or null when nothing is queued.
+let pendingRequest = null;
+// docs/PROTOCOL.md "Appairage silencieux", "Jeton refusé": at most one
+// no-secret retry per connection cycle after a 4401 that followed a `secret`.
+// A cycle runs from a disconnection to the next `hello-ok`, which resets this
+// flag — never a silent infinite loop against a broker that keeps refusing.
+let retriedWithoutSecretThisCycle = false;
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
-  chrome.alarms.create(RECONNECT_ALARM, { periodInMinutes: 0.5 });
+api.runtime.onInstalled.addListener(() => {
+  // Chrome/Brave only — the side panel opens on action click via this
+  // behaviour flag. Firefox has no sidePanel API at all; its equivalent
+  // (sidebar_action) opens declaratively from the manifest, and the explicit
+  // click case is handled by the action.onClicked listener below.
+  if (api.sidePanel) api.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+  api.alarms.create(RECONNECT_ALARM, { periodInMinutes: 0.5 });
   connectIfNeeded();
   setupContextMenus();
 });
 
 function setupContextMenus() {
-  chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: "wingpen", title: "Wingpen", contexts: ["selection"] });
+  api.contextMenus.removeAll(() => {
+    api.contextMenus.create({ id: "wingpen", title: "Wingpen", contexts: ["selection"] });
     for (const [id, entry] of Object.entries(CONTEXT_MENU_ACTIONS)) {
-      chrome.contextMenus.create({ id, parentId: "wingpen", title: entry.label, contexts: ["selection"] });
+      api.contextMenus.create({ id, parentId: "wingpen", title: entry.label, contexts: ["selection"] });
     }
+  });
+}
+
+// Opens Wingpen's panel in response to a genuine user gesture (a toolbar
+// action click, or — below — a context-menu selection). Feature-detected,
+// never user-agent sniffed: Firefox exposes sidebarAction (no sidePanel at
+// all), Chrome/Brave expose sidePanel (no sidebarAction). On Firefox,
+// sidebarAction.open() must run synchronously within the gesture's own event
+// handler — called as the very first statement below, before any `await`, so
+// it does even inside an async listener — or Firefox silently refuses it.
+function openPanel(tab) {
+  if (api.sidebarAction && typeof api.sidebarAction.open === "function") {
+    return api.sidebarAction.open();
+  }
+  if (api.sidePanel && typeof api.sidePanel.open === "function" && tab?.windowId != null) {
+    return api.sidePanel.open({ windowId: tab.windowId }).catch(() => {});
+  }
+  return undefined;
+}
+
+// Chrome/Brave open the side panel on action click automatically (see the
+// setPanelBehavior call above); Firefox needs this explicit listener, since
+// sidebar_action does not open itself. Registering it on Chrome too is
+// harmless — openPanel() no-ops there since sidebarAction doesn't exist and
+// the automatic behaviour already handles it.
+if (api.action && api.action.onClicked) {
+  api.action.onClicked.addListener((tab) => {
+    openPanel(tab);
   });
 }
 
 // A right-click on a text selection, followed by picking one of our menu
 // items, IS a real user gesture — the same kind a toolbar-icon click is —
-// which is why chrome.sidePanel.open() is allowed to run here (it throws
-// outside of a genuine gesture). The panel, however, may not exist yet (this
-// is often the very first interaction). So the selection text is stashed in
+// which is why openPanel() is allowed to run here (chrome.sidePanel.open()
+// throws, and Firefox's sidebarAction.open() is refused, outside of a
+// genuine gesture). The panel, however, may not exist yet (this is often the
+// very first interaction). So the selection text is stashed in
 // chrome.storage.session — a request "in flight" until a panel picks it up —
 // and a broadcast is sent in case a panel is already open and listening.
 // panel.js drains the stash both on its own load and on that broadcast,
@@ -78,13 +136,14 @@ function setupContextMenus() {
 // died mid-read (drainPendingAction did not run yet) leaves a "read but
 // still present" stash undamaged for the next attempt, so nothing is lost
 // and a delivered action never fires twice.
-chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+api.contextMenus.onClicked.addListener(async (info, tab) => {
   const entry = CONTEXT_MENU_ACTIONS[info.menuItemId];
   if (!entry || !info.selectionText || !tab?.windowId) return;
 
-  await chrome.sidePanel.open({ windowId: tab.windowId }).catch(() => {});
+  // Called synchronously, before any await — see openPanel()'s comment.
+  openPanel(tab);
 
-  await chrome.storage.session.set({
+  await api.storage.session.set({
     [PENDING_ACTION_KEY]: {
       action: entry.action,
       label: entry.label,
@@ -97,79 +156,92 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   broadcast({ type: "wingpen:pending-action" });
 });
 
-chrome.runtime.onStartup.addListener(() => {
+// Stamped so the panel can tell "the user just clicked my icon" apart from
+// "the browser restored a panel that was left open". Chrome restores an open
+// side panel at startup, and the panel reads the active tab when it loads —
+// which would be a page read with no gesture behind it, the one thing rule 5
+// forbids. The panel checks this stamp and falls back to metadata-only
+// classification inside the window (see panel.js, openedFromGesture).
+// storage.session, never local: it must not survive the browser.
+api.runtime.onStartup.addListener(() => {
+  api.storage.session.set({ browserStartedAt: Date.now() }).catch(() => {});
   connectIfNeeded();
 });
 
-chrome.alarms.onAlarm.addListener((alarm) => {
+api.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === RECONNECT_ALARM) connectIfNeeded();
 });
 
 // Any message from a panel/options page wakes this worker up; take that
 // opportunity to make sure the socket is alive.
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+// I2 (lot7 security review): any extension page can post a message this
+// worker's onMessage listener will receive — without checking who sent it,
+// another (malicious) extension able to reach this one (e.g. via
+// externally_connectable, or a content script sharing an isolated world)
+// could forge "wingpen:client-message" (talk to the broker as this user) or
+// "wingpen:set-token" (overwrite the pairing token). Deliberately NOT
+// `!sender.tab` — the options page can be opened in a regular tab (it's a
+// full page, not just a popup), so that would wrongly reject it. What must
+// hold is that the sender IS this extension: `sender.id` matches our own
+// runtime id, AND `sender.url` is one of our own pages (a page origin under
+// `chrome-extension://<our-id>/` / `moz-extension://<our-id>/`), ruling out
+// a forged sender.id (not forgeable by the platform, but checked together as
+// belt and braces since sender.url is what actually gates externally_connectable
+// forgery attempts specifically).
+function isTrustedInternalSender(sender) {
+  return Boolean(sender && sender.id === api.runtime.id && typeof sender.url === "string" && sender.url.startsWith(api.runtime.getURL("")));
+}
+
+api.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== "object") return undefined;
 
   if (message.type === "wingpen:panel-ready") {
     connectIfNeeded();
-    sendResponse({ state: wsState });
+    sendResponse({ state: wsState, workerInstanceId: WORKER_INSTANCE_ID });
     return undefined;
   }
 
   if (message.type === "wingpen:get-status") {
-    sendResponse({ state: wsState });
+    sendResponse({ state: wsState, workerInstanceId: WORKER_INSTANCE_ID });
     return undefined;
   }
 
   if (message.type === "wingpen:client-message") {
+    if (!isTrustedInternalSender(sender)) return undefined;
     sendToBroker(message.payload);
+    // Lets the panel stamp the request with the worker instance that
+    // actually accepted it — see WORKER_INSTANCE_ID above and panel.js's
+    // request-watch (deliverable B4).
+    sendResponse({ workerInstanceId: WORKER_INSTANCE_ID });
     return undefined;
+  }
+
+  // Sent by options.js on paste/save (docs/PROTOCOL.md "Appairage
+  // silencieux", "Collage (options, Firefox)"). Centralised here (rather than
+  // options.js writing storage.session directly) so the same force-reconnect
+  // path — which also resets backoffMs and the retry-once flag below — always
+  // runs right after the token changes. An empty token clears it instead of
+  // storing "".
+  if (message.type === "wingpen:set-token") {
+    if (!isTrustedInternalSender(sender)) return undefined;
+    (async () => {
+      const token = typeof message.token === "string" ? message.token.trim() : "";
+      if (token) {
+        await api.storage.session.set({ pairingToken: token });
+      } else {
+        await api.storage.session.remove("pairingToken");
+      }
+      forceReconnect();
+      sendResponse({ ok: true });
+    })();
+    return true; // keep the message channel open for the async sendResponse above
   }
 
   return undefined;
 });
 
-// One-click pairing (docs/PROTOCOL.md "Appairage en un clic"): the broker's
-// own /pair page, loaded in a normal tab, hands us the pairing token
-// directly via chrome.runtime.sendMessage(EXTENSION_ID, …). This is the
-// ONLY entry point that can write to chrome.storage.session from outside the
-// extension, so it is checked twice — manifest.json's
-// "externally_connectable.matches" (Chrome enforces this before we even see
-// the message) AND explicitly here, because the matches list alone is a
-// prefix a hostile page reachable via the same loopback port could also
-// satisfy in principle (e.g. some other origin under 127.0.0.1 on the same
-// port is not a thing today, but the explicit check costs nothing and does
-// not rely solely on Chrome's manifest-level enforcement).
-chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
-  if (!sender.url || !sender.url.startsWith(PAIR_ORIGIN_PREFIX)) {
-    sendResponse({ ok: false, reason: "origin not allowed" });
-    return undefined;
-  }
-  // A message from a normal tab always carries `sender.tab`; refuse anything
-  // that doesn't (e.g. sent from another extension's background context).
-  if (!sender.tab) {
-    sendResponse({ ok: false, reason: "no sender tab" });
-    return undefined;
-  }
-  if (!message || message.type !== "wingpen:pair") {
-    sendResponse({ ok: false, reason: "unknown message type" });
-    return undefined;
-  }
-  if (typeof message.token !== "string" || !message.token) {
-    sendResponse({ ok: false, reason: "missing token" });
-    return undefined;
-  }
-
-  (async () => {
-    await chrome.storage.session.set({ pairingToken: message.token });
-    forceReconnect();
-    sendResponse({ ok: true });
-  })();
-  return true; // keep the message channel open for the async sendResponse above
-});
-
 function broadcast(message) {
-  chrome.runtime.sendMessage(message).catch(() => {
+  api.runtime.sendMessage(message).catch(() => {
     // No listener (panel/options closed) — fine, nothing to relay to.
   });
 }
@@ -183,11 +255,14 @@ async function connectIfNeeded() {
   if (wsState === "connected" || wsState === "connecting" || wsState === "handshaking") return;
   if (ws) return;
 
-  const { pairingToken } = await chrome.storage.session.get("pairingToken");
-  if (!pairingToken) {
-    setState("no-token");
-    return;
-  }
+  // With no stored token, still attempt the handshake — this Chrome install
+  // may already be trusted (its origin is fixed, unforgeable, and derived
+  // from manifest.json's pinned key; see docs/PROTOCOL.md "Appairage
+  // silencieux"), in which case the broker silently auto-grants a token on
+  // hello-ok. Same thing for a Firefox uuid already pinned. If the broker
+  // doesn't know this origin, it refuses and the close handler below falls
+  // back to "no-token".
+  const { pairingToken } = await api.storage.session.get("pairingToken");
 
   setState("connecting");
   try {
@@ -200,7 +275,9 @@ async function connectIfNeeded() {
 
   ws.addEventListener("open", () => {
     setState("handshaking");
-    ws.send(JSON.stringify({ type: "hello", secret: pairingToken, v: PROTOCOL_VERSION }));
+    const hello = { type: "hello", v: PROTOCOL_VERSION };
+    if (pairingToken) hello.secret = pairingToken;
+    ws.send(JSON.stringify(hello));
     helloTimeoutId = setTimeout(() => {
       if (wsState !== "connected") {
         setState("handshake-timeout");
@@ -216,8 +293,34 @@ async function connectIfNeeded() {
   ws.addEventListener("close", (event) => {
     clearTimeout(helloTimeoutId);
     ws = null;
-    setState("disconnected");
     broadcast({ type: "wingpen:closed", code: event.code, reason: event.reason });
+
+    // docs/PROTOCOL.md "Jeton refusé": a 4401 during the handshake, after we
+    // sent a `secret` (permanent secret or session token), means that secret
+    // is stale — typically a broker restart, which invalidates every session
+    // token in memory. Drop it and retry once, immediately, without any
+    // secret: an already-known origin (Chromium id, pinned Firefox uuid)
+    // gets a silent grant; an unknown one falls through to "no-token" below
+    // on this very next attempt. At most once per cycle (flag reset on
+    // hello-ok) so a broker that keeps refusing never loops silently.
+    if (event.code === 4401 && wsState === "handshaking" && pairingToken && !retriedWithoutSecretThisCycle) {
+      retriedWithoutSecretThisCycle = true;
+      api.storage.session.remove("pairingToken").catch(() => {});
+      setState("disconnected");
+      connectIfNeeded();
+      return;
+    }
+
+    // No secret was sent (or the no-secret retry above just ran), and the
+    // handshake still didn't reach "connected": the broker doesn't know this
+    // origin (silent auto-grant was refused). Retrying immediately with
+    // backoff would just get refused again — fall back to "no-token" and let
+    // the existing reconnect alarm (every 30s) retry later.
+    if (!pairingToken && wsState === "handshaking") {
+      setState("no-token");
+      return;
+    }
+    setState("disconnected");
     scheduleReconnect();
   });
 
@@ -228,9 +331,11 @@ async function connectIfNeeded() {
   });
 }
 
-// Called right after a fresh token lands via one-click pairing: any stale
-// socket/backoff state from repeated failed attempts on the OLD (or absent)
-// token must not delay the very next attempt.
+// Called right after the options page changes the stored token (paste or
+// clear — see "wingpen:set-token" above): any stale socket/backoff state
+// from repeated failed attempts on the OLD (or absent) token must not delay
+// the very next attempt. A deliberate token change also starts a fresh
+// handshake cycle, so the no-secret-retry flag resets here too.
 function forceReconnect() {
   if (ws) {
     try {
@@ -241,6 +346,7 @@ function forceReconnect() {
     ws = null;
   }
   backoffMs = 1000;
+  retriedWithoutSecretThisCycle = false;
   setState("disconnected");
   connectIfNeeded();
 }
@@ -263,8 +369,21 @@ function handleBrokerMessage(raw) {
   if (message.type === "hello-ok") {
     clearTimeout(helloTimeoutId);
     backoffMs = 1000;
+    // hello-ok is the end of a handshake cycle (docs/PROTOCOL.md "Jeton
+    // refusé") — the next 4401 gets its own single no-secret retry again.
+    retriedWithoutSecretThisCycle = false;
+    // token is always present now (docs/PROTOCOL.md "Poignée de main"): a
+    // fresh session token (silent grant, or after presenting the permanent
+    // secret / a session token), or the same one echoed back. Store it in
+    // chrome.storage.session, never local (CLAUDE.md rule #1), replacing
+    // whatever was there — in particular a permanent secret pasted by hand
+    // is replaced by the session token from this very hello-ok.
+    if (message.token) {
+      api.storage.session.set({ pairingToken: message.token }).catch(() => {});
+    }
     setState("connected");
     broadcast({ type: "wingpen:hello-ok", models: message.models, capabilities: message.capabilities });
+    flushPendingRequest();
     return;
   }
 
@@ -273,18 +392,54 @@ function handleBrokerMessage(raw) {
 }
 
 function sendToBroker(payload) {
-  if (!payload || wsState !== "connected" || !ws || ws.readyState !== WebSocket.OPEN) {
-    broadcast({
-      type: "wingpen:broker-message",
-      message: {
-        type: "error",
-        id: payload?.id ?? "unknown",
-        code: "internal",
-        message: "Not connected to the broker.",
-      },
-    });
-    connectIfNeeded();
+  if (!payload) return;
+  if (wsState === "connected" && ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(payload));
     return;
   }
+  // Socket not up right now (deliverable B2): hold the request instead of
+  // failing it on the spot — a broker restart is usually back within
+  // seconds, and rejecting immediately turns every restart into a visible
+  // error for no reason. connectIfNeeded() is the "immediate attempt on any
+  // user action" half of deliverable B3 (the other half is the alarm).
+  holdPendingRequest(payload);
+  connectIfNeeded();
+}
+
+/** Holds at most one request while reconnecting, and drops it — with an
+ * explicit French reason sent back as a normal terminal `error` for its id —
+ * after PENDING_REQUEST_TIMEOUT_MS, or immediately if a second request
+ * arrives before the first was flushed. Never queues silently/unboundedly. */
+function holdPendingRequest(payload) {
+  if (pendingRequest) {
+    rejectPendingRequest(pendingRequest, "Une nouvelle requête a pris la priorité ; celle-ci a été abandonnée.");
+  }
+  const timeoutId = setTimeout(() => {
+    if (pendingRequest && pendingRequest.payload === payload) {
+      rejectPendingRequest(
+        pendingRequest,
+        "Le broker ne répond pas depuis 15 s. Vérifiez qu'il tourne sur cette machine, puis réessayez.",
+      );
+    }
+  }, PENDING_REQUEST_TIMEOUT_MS);
+  pendingRequest = { payload, timeoutId };
+}
+
+function rejectPendingRequest(entry, reasonMessage) {
+  clearTimeout(entry.timeoutId);
+  if (pendingRequest === entry) pendingRequest = null;
+  broadcast({
+    type: "wingpen:broker-message",
+    message: { type: "error", id: entry.payload?.id ?? "unknown", code: "internal", message: reasonMessage },
+  });
+}
+
+/** Replays the one held request, if any, once the socket reaches
+ * "connected" — called from handleBrokerMessage's hello-ok branch. */
+function flushPendingRequest() {
+  if (!pendingRequest || wsState !== "connected" || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const { payload, timeoutId } = pendingRequest;
+  clearTimeout(timeoutId);
+  pendingRequest = null;
   ws.send(JSON.stringify(payload));
 }

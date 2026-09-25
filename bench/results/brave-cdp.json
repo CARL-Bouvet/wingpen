@@ -1,0 +1,54 @@
+{
+  "measuredBy": "admin, CDP-driven (bench/transport/cdp-measure.ts), Brave 152 headless, 2026-09-25",
+  "note": "DevTools attached keeps the service worker alive: latency/throughput only, no idle-survival figure. NM host manifest honoured only in ~/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts/ (not in <user-data-dir>/NativeMessagingHosts/ with a custom --user-data-dir); temporary file removed after the run.",
+  "runs": [
+    {
+      "mode": "nm",
+      "coldConnectMs": {
+        "p50": 14.7,
+        "max": 24.8
+      },
+      "roundTripMs": {
+        "p50": 0.2,
+        "p95": 0.3,
+        "p99": 0.9
+      },
+      "stream5000x60Ms": [
+        141.8,
+        137.2,
+        142.5
+      ],
+      "upload1MiBMs": [
+        17.6,
+        13.3,
+        17.5,
+        11.5,
+        10.8
+      ]
+    },
+    {
+      "mode": "ws",
+      "coldConnectMs": {
+        "p50": 1.5,
+        "max": 4.6
+      },
+      "roundTripMs": {
+        "p50": 0.1,
+        "p95": 0.2,
+        "p99": 0.3
+      },
+      "stream5000x60Ms": [
+        48.4,
+        53.7,
+        56
+      ],
+      "upload1MiBMs": [
+        9,
+        9,
+        9,
+        12.7,
+        7
+      ]
+    }
+  ]
+}

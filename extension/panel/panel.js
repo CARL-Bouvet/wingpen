@@ -86,6 +86,19 @@ const MAIN_BUTTON_LABELS = {
   page: "Résumer cette page",
 };
 
+// Amendement 2026-09-25 (types de page), docs/PROTOCOL.md "Types de page,
+// faits et entrées". `context.pageKind` — set by extract.js only for
+// kind === "page" — refines the generic "page" label above. Plain text only,
+// same button, same styling: no new visual element, no new CSS (task scope).
+// `other` keeps today's wording so an unrecognized/absent pageKind (an older
+// client, or the amendment's own "doute → other") reads exactly as before.
+const PAGE_KIND_BUTTON_LABELS = {
+  list: "Résumer ces résultats",
+  listing: "Résumer cette fiche",
+  article: "Résumer cet article",
+  other: "Résumer cette page",
+};
+
 // Fixed file list for the code fingerprint (deliverable C1) — order and
 // paths MUST stay identical to scripts/stamp.sh's FILES array, or the two
 // hashes computed independently (one from what the browser actually loaded,
@@ -149,6 +162,10 @@ let requestWorkerInstanceId = null; // service worker instance that accepted the
 // Page detection state (deliverable 1) — see the comment block above.
 let currentTabId = null;
 let pageType = null; // "video" | "article" | "page" | null (unknown)
+// "list" | "listing" | "article" | "other" | null (unknown — no DOM read yet,
+// or the client-side context predates the amendment). DOM-derived only:
+// redetectTabFromMetadata() never sets this (see its own comment).
+let pageKind = null;
 let knownOrigin = null; // origin string once learned (granted, or from a failed-extraction error), or null
 
 // "Wingpen lit cette page" toggle (deliverable 3). null = no stored
@@ -796,8 +813,16 @@ function failActiveRequest(id, text) {
 
 // --- Page detection (deliverable 1) --------------------------------------
 
+/** `pageKind` (DOM-derived, kind === "page" only) wins over the legacy
+ * `pageType` label when known; falls back to it otherwise — an older broker
+ * exchange, a video, or a page read before the DOM classifier ran. */
+function mainButtonLabel() {
+  if (pageKind && PAGE_KIND_BUTTON_LABELS[pageKind]) return PAGE_KIND_BUTTON_LABELS[pageKind];
+  return MAIN_BUTTON_LABELS[pageType] ?? "Résumer";
+}
+
 function updateMainButton() {
-  els.mainAction.textContent = MAIN_BUTTON_LABELS[pageType] ?? "Résumer";
+  els.mainAction.textContent = mainButtonLabel();
 }
 
 function updateAttachToggle() {
@@ -821,6 +846,7 @@ function hideActivateAffordance() {
 
 function resetPageState() {
   pageType = null;
+  pageKind = null;
   updateMainButton();
   updateAttachToggle();
 }
@@ -843,6 +869,12 @@ function applyDetectedContext(context) {
     knownOrigin = null;
   }
   pageType = classifyForContext(context);
+  // docs/PROTOCOL.md "Compatibilité": an absent field, or a value outside
+  // the four expected ones, means "behave exactly as before" — falling back
+  // to the legacy pageType label in mainButtonLabel() achieves that without
+  // needing to special-case it here.
+  pageKind =
+    context.kind === "page" && typeof context.pageKind === "string" ? context.pageKind : null;
   updateMainButton();
   updateAttachToggle();
   hideActivateAffordance();
@@ -1004,7 +1036,7 @@ async function summarize() {
   applyDetectedContext(context);
 
   const id = newId();
-  const label = MAIN_BUTTON_LABELS[pageType] ?? "Résumer";
+  const label = mainButtonLabel();
   // Never the URL here: it is persisted to chrome.storage.local unencrypted
   // (CLAUDE.md rule #1) and a URL can carry a session token. Title only, with
   // a neutral fallback rather than reaching for context.url.

@@ -45,6 +45,17 @@ nouveau couple `provider.status` / `provider.status-result` ; port 8787 figé ; 
 §5) résolus. Chaque passage touché porte la mention « Amendement 2026-09-25 ». **Là où ce texte
 contredit le code, c'est le code qui se corrige** (lots 4 et 5).
 
+Amendement 2026-09-25 (types de page) : le `context` d'une page gagne trois champs optionnels —
+`pageKind` (`list` / `listing` / `article` / `other`), `facts` (paires « libellé : valeur »
+affichées) et `items` (entrées visibles d'une liste de résultats) ; les couches superposées
+(bandeaux de consentement, dialogues modaux) sont écartées avant toute mesure de densité ; un
+budget de taille commun aux trois ; une consigne de résumé par type de page. Un client qui n'envoie
+aucun de ces champs obtient exactement le comportement antérieur. Voir « Types de page, faits et
+entrées » sous « Context », « Construction du prompt » et « Limites côté broker ». Motif : deux
+défauts mesurés le 2026-09-25 (bandeau RGPD retenu à la place de la fiche ; sur une page de
+résultats, une seule annonce gardée ; sur une fiche, les chiffres affichés perdus au profit de la
+prose de l'agence). Code à suivre : lot L6 (extension), lot L7 (broker).
+
 ## Transport
 
 WebSocket, `ws://127.0.0.1:8787/ws`.
@@ -114,8 +125,10 @@ remis à 0700 à chaque démarrage ; les fichiers qu'ils contiennent (`config.js
   donc le secret permanent, et s'épingler elle-même. Native Messaging, où le navigateur vérifie
   lui-même l'ID de l'extension, en est le vrai remède ; il n'est pas implémenté ici.
 - **Réécriture de l'`Origin` d'un WebSocket par une autre extension** (Chrome
-  `declarativeNetRequest`, Firefox `webRequest` bloquant) : non vérifié à la date de cet amendement
-  (recherche R3 du lot 1). Si c'est possible, l'appairage silencieux lui est ouvert.
+  `declarativeNetRequest`, Firefox `webRequest` bloquant) : **prouvé le 25/09 sur les deux
+  navigateurs** (`docs/etudes/preuves-origine.md`). Une extension munie de ces permissions et d'une
+  permission d'hôte sur `127.0.0.1` se fait passer pour Wingpen et obtient l'appairage silencieux.
+  Aucune parade simple n'existe avec le WebSocket ; Native Messaging est le remède, décision à Romain.
 - **Usurpation du port** : l'extension n'authentifie pas le broker. Un processus qui occupe
   `127.0.0.1:8787` pendant que le broker est arrêté reçoit le `hello` puis le texte des pages et
   les prompts. Depuis cet amendement, l'extension ne détient plus qu'un jeton de session (inutile
@@ -260,8 +273,10 @@ l'avance ; il l'apprend :
   stable d'un redémarrage à l'autre. Un collage du secret permanent **par installation** ; ensuite
   appairage silencieux, y compris après un redémarrage du navigateur ou du broker.
 - Firefox, extension **chargée temporairement** (`about:debugging`) : elle disparaît à la fermeture
-  de Firefox et revient avec un **nouvel uuid** à chaque chargement. Un collage **par chargement**.
-  Chaque chargement ajoute une entrée à la liste ; le plafond de 16 recycle les plus anciennes.
+  de Firefox et doit être rechargée. Si elle déclare un ID gecko (c'est le cas de Wingpen), son
+  uuid **reste le même** d'un chargement à l'autre et après un redémarrage, sur un même profil
+  (prouvé le 25/09, `docs/etudes/preuves-origine.md`) : un seul collage **par profil**, puis
+  l'appairage silencieux reconnaît l'uuid épinglé.
 
 ### Appairage silencieux
 
@@ -438,7 +453,14 @@ Tout message porte un `id` (chaîne, unique par requête, généré côté exten
   "url": "https://…",   // origine + chemin UNIQUEMENT — jamais la query string ni le fragment
   "title": "…",
   "text": "…",          // texte principal déjà extrait et assaini par le content script
-  "videoId": "…"        // uniquement si kind === "youtube"
+  "videoId": "…",       // uniquement si kind === "youtube"
+
+  // Amendement 2026-09-25 (types de page). Les trois champs suivants sont
+  // OPTIONNELS et n'ont de sens que si kind === "page". Voir « Types de page,
+  // faits et entrées » ci-dessous.
+  "pageKind": "list" | "listing" | "article" | "other",
+  "facts": [ { "label": "Prix au m²", "value": "5 214 €" } ],          // si pageKind === "listing"
+  "items": [ { "title": "…", "price": "…", "location": "…", "detail": "…" } ] // si pageKind === "list"
 }
 ```
 
@@ -449,7 +471,338 @@ jeton de session (`?token=…`, `#access_token=…`) que rien en aval n'a besoin
 **Le content script envoie du texte, jamais du HTML.** Il extrait, assainit, tronque à
 40 000 caractères et transmet. Le broker ne fait confiance à rien de ce qui vient de la page :
 il traite `text`, `title` et `url` comme des données, jamais comme une instruction — voir
-« Construction du prompt » plus bas.
+« Construction du prompt » plus bas. *Amendement 2026-09-25 (types de page) : les 40 000
+caractères deviennent un budget commun à `text`, `facts` et `items` — voir « Budget de taille »
+ci-dessous. `facts` et `items` sont des données au même titre que `text`.*
+
+### Types de page, faits et entrées
+
+Amendement 2026-09-25 (types de page). Toute cette sous-section est nouvelle.
+
+#### Principe
+
+Le content script reconnaît la forme de la page que l'utilisateur regarde et l'annonce au broker
+par `pageKind`. Deux formes changent le comportement (`list`, `listing`) ; les deux autres
+(`article`, `other`) se comportent **exactement comme avant l'amendement**. Il s'ensuit une règle
+d'asymétrie : **un faux positif coûte plus cher qu'un faux négatif.** Une fiche prise pour
+`other` reçoit le résumé d'aujourd'hui, moins bon mais juste ; un article pris pour `listing`
+reçoit une consigne faite pour autre chose. Les règles de détection de `list` et `listing` sont
+donc strictes, et **le doute se résout toujours en `"other"`** (DECISIONS T18 : dégrader, jamais
+casser).
+
+La détection s'ancre sur **le texte visible et la forme de l'arbre** (balises, répétition,
+position à l'écran), **jamais** sur une classe CSS, un identifiant d'élément, un nom d'hôte ou une
+URL (DECISIONS T17). Aucune recette par site n'entre par ce chemin : c'est le chemin générique
+gratuit, qui doit marcher partout.
+
+Les seuils chiffrés ci-dessous sont des **valeurs de départ**. L6 peut les ajuster sur le corpus
+de pages sans amender ce protocole, tant que la forme de chaque règle est respectée et que
+l'ajustement est consigné dans le JOURNAL. Les plafonds de « Faits », « Entrées » et « Budget de
+taille », eux, font partie du contrat : le broker les vérifie.
+
+#### Ordre des opérations dans le content script
+
+1. Écarter les couches superposées (ci-dessous).
+2. Délimiter la **région principale** dans ce qui reste : premier `article`, `main` ou
+   `[role=main]` portant plus de 200 caractères, sinon le bloc le plus dense (règle
+   d'aujourd'hui, inchangée).
+3. Chercher les entrées répétées (→ `list`), puis les faits (→ `listing`).
+4. Décider `pageKind`.
+5. Remplir `items` ou `facts`, puis `text` avec le budget qui reste.
+
+#### Couches superposées — exclusion avant toute mesure
+
+Avant la mesure de densité, avant la recherche des faits et des entrées, le content script retire
+de l'analyse les couches qui recouvrent la page sans en être le contenu. **L'exclusion est
+structurelle d'abord, lexicale ensuite.**
+
+*Signaux structurels, suffisants seuls :*
+
+- `role="dialog"`, `role="alertdialog"`, `aria-modal="true"`, élément `<dialog>` ouvert ;
+- élément dont le style calculé est `position: fixed` ou `position: sticky` et dont le rectangle
+  affiché couvre **au moins 30 %** de la surface du viewport.
+
+*Signaux structurels faibles, qui exigent une confirmation lexicale :*
+
+- élément `fixed` ou `sticky` collé au bord haut ou bas du viewport et large d'au moins 80 % de sa
+  largeur (le bandeau de consentement en bas d'écran).
+
+*Confirmation lexicale* : le texte visible du conteneur contient au moins un mot du lexique de
+consentement — `cookie(s)`, `consentement`, `vie privée`, `confidentialité`, `RGPD`, `traceurs`,
+`partenaires`, `consent`, `privacy`, `GDPR` — **et** un contrôle cliquable (`button`, `a`,
+`[role=button]`) dont le texte visible est un mot d'acceptation ou de refus : `Accepter`,
+`Tout accepter`, `J'accepte`, `Refuser`, `Tout refuser`, `Continuer sans accepter`,
+`Paramétrer`, `Accept`, `Agree`, `Reject`.
+
+*Exclusion lexicale seule* (conteneur ni modal ni fixe) : permise seulement si les trois
+conditions tiennent — confirmation lexicale ci-dessus, texte visible de moins de 1 500
+caractères, et le conteneur ne contient ni le `h1` de la page ni la région principale. Sans
+cette garde, un article **sur** les cookies serait effacé de lui-même.
+
+Le lexique est un **indice**, pas une recette de site : il ne nomme aucun éditeur, aucune
+plateforme de consentement, aucune classe. Il est court exprès ; l'étendre ne demande pas
+d'amendement, le transformer en liste de sélecteurs par site en demanderait un (et contredirait
+T17).
+
+*Une couche peut être le contenu.* Sur beaucoup de sites de petites annonces, cliquer un résultat
+ouvre la fiche **dans une modale**. Règle : un dialogue ou un élément fixe qui couvre au moins
+30 % du viewport, porte au moins 500 caractères de texte visible et **ne** reçoit **pas** la
+confirmation lexicale est le contenu que l'utilisateur regarde — l'extraction se restreint alors
+à lui, et le reste de la page est ignoré. S'il y en a plusieurs, le plus haut dans l'empilement
+(le dernier dans l'ordre du document, à défaut de mieux).
+
+*Pourquoi la position CSS ne décide jamais seule — mesuré le 25/09.* Sur la page de résultats de
+bienici, l'élément `position: fixed` de la page est `DIV#searchSideView`, 4 535 caractères : c'est
+le panneau qui contient les annonces. Sur une fiche, l'élément fixe est la carte de contact de
+l'agence. Une règle « fixe, donc superposé, donc écarté » supprimerait la liste des résultats.
+D'où la confirmation lexicale, et la règle « une couche peut être le contenu » ci-dessus. Relevés
+dans `notes/corpus/observations.md`.
+
+*Garde-fou* : si, après exclusion, la page ne porte plus 200 caractères de texte visible, le
+content script annule l'exclusion et reprend la page entière (comportement d'aujourd'hui), avec
+`pageKind: "other"`.
+
+Les éléments exclus ne sont ni envoyés, ni mesurés, ni lus pour `facts` ou `items`. Rien n'est
+cliqué, fermé ni masqué dans la page : l'exclusion est une lecture, pas une action (règle du
+geste).
+
+#### Définition et détection de chaque type
+
+Évaluation dans l'ordre `list`, `listing`, `article`, `other` ; le premier qui répond l'emporte.
+
+**`list`** — une page de résultats : plusieurs objets comparables, chacun résumé en quelques
+lignes et menant ailleurs (recherche d'annonces, catalogue, résultats de moteur interne).
+Détection, toutes conditions requises :
+
+- dans la région principale — ou, si la région principale est elle-même une entrée, dans son
+  plus proche ancêtre qui en contient plusieurs — un conteneur a **au moins 5 enfants de même
+  forme** : même balise, même suite de balises enfants sur deux niveaux (la forme de l'arbre, pas
+  les classes) ;
+- chacun de ces enfants contient un lien (`a[href]`) et porte entre 20 et 1 000 caractères de
+  texte visible ;
+- au moins la moitié d'entre eux contient une **valeur chiffrée** : un nombre suivi ou précédé
+  d'une devise (`€`, `EUR`, `$`, `£`) ou d'une unité (`m²`, `m2`, `km`, `pièces`, `p.`, `ch.`) ;
+- le texte cumulé de ces enfants fait **au moins 50 %** du texte visible de la région principale ;
+- aucun bloc de faits (≥ 4 faits, voir `listing`) n'existe **hors** de ces enfants.
+
+La dernière condition écarte la fiche suivie d'un carrousel « annonces similaires » : elle est
+une `listing`, et le carrousel n'est ni un fait ni une entrée.
+
+**`listing`** — une fiche : la page d'un seul objet (bien immobilier, produit, véhicule, offre
+d'emploi), qui en affiche les caractéristiques sous forme « libellé : valeur » et en général un
+texte descriptif rédigé par le vendeur. Détection, toutes conditions requises :
+
+- pas `list` ;
+- au moins **4 faits** trouvés (voir « Faits » ci-dessous) hors des couches exclues ;
+- au moins un de ces faits, ou une ligne à moins de 3 éléments du `h1`, porte une valeur
+  chiffrée au sens ci-dessus.
+
+Une infobox d'encyclopédie a souvent 4 faits mais rarement un prix ou une surface ; c'est la
+raison de la troisième condition. Un `og:type` égal à `product` est un indice concordant, jamais
+une condition suffisante.
+
+**`article`** — un texte suivi à lire : article de presse, billet, documentation, tutoriel.
+Détection : les signaux qui existent déjà (`article`, `[role=main]`, `og:type` = `article`, ou
+plus de 1 200 caractères de prose dans la région principale — cf. `extension/content/detect.js`).
+Ne change aucun comportement : sa seule utilité est l'étiquette (libellé du bouton côté panneau).
+
+**`other`** — tout le reste, **et tout cas douteux** : deux règles qui se contredisent, un seuil
+atteint de justesse, une exception pendant la détection, un DOM inattendu. Le content script
+envoie alors `pageKind: "other"`, sans `facts` ni `items`, et le `text` d'aujourd'hui (après
+exclusion des couches). Une exception levée dans la détection ou l'extraction des faits et
+entrées est rattrapée et ramène à `"other"` ; elle ne fait jamais échouer l'extraction.
+
+#### Corrections mesurées sur des pages réelles
+
+Amendement 2026-09-25 (bis). La première implémentation passait ses tests sur un faux DOM et
+échouait sur les vraies pages. Sonde : `notes/corpus/apres/` et `notes/corpus/observations.md`.
+Ces quatre règles **précisent** celles qui précèdent et l'emportent en cas de doute.
+
+1. **« Le plus proche ancêtre qui en contient plusieurs » se cherche en remontant**, sur six
+   niveaux au plus. Sur la page de résultats de bienici, la région principale est l'annonce mise
+   en avant (3 253 caractères), rangée dans un encart de 3 annonces. Le conteneur des résultats
+   est deux niveaux plus haut : `search-results-list`, 25 enfants, dont 24 `article` de même
+   forme. S'arrêter au parent direct manque la liste.
+2. **Une entrée hors bornes est écartée seule, elle ne condamne pas le groupe.** Une annonce mise
+   en avant qui porte toute sa description dépasse 1 000 caractères. Le groupe reste valable s'il
+   garde au moins 5 entrées dans les bornes.
+3. **« Aucun bloc de faits hors de la liste » se juge hors du conteneur de la liste, pas hors de
+   ses entrées.** La description de l'annonce mise en avant contient des lignes « libellé :
+   valeur » (« Taxes foncières : 503 € »). Elle est dans le conteneur des résultats : elle ne fait
+   pas de la page une fiche. Le cas « fiche puis carrousel d'annonces similaires » reste une
+   `listing`, parce que les faits de la fiche sont hors du conteneur du carrousel.
+4. **Un fait ne se lit que dans un élément affiché**, et jamais dans un formulaire. Piège du DOM :
+   `innerText` d'un élément non affiché (`display: none`) renvoie son `textContent`. Sur la fiche
+   bienici, les 40 places de faits étaient prises par la liste cachée des indicatifs téléphoniques
+   du formulaire de contact (« Afghanistan : +93 ») et par ses messages de validation. Sont donc
+   écartés : les éléments sans rectangle affiché (`getClientRects().length === 0`), `visibility:
+   hidden`, et tout descendant de `form`, `select`, `option`, `datalist`, `[hidden]` ou
+   `[aria-hidden="true"]`.
+
+**Amendement 2026-09-25 (ter), après une deuxième sonde sur les vraies pages.** Les règles
+suivantes remplacent celles des sections précédentes là où elles diffèrent.
+
+5. **Seul un dialogue est un signal structurel fort** (`role="dialog"`, `role="alertdialog"`,
+   `aria-modal="true"`, `<dialog>` ouvert). Un élément `fixed` ou `sticky`, même s'il couvre plus
+   de 30 % de l'écran, n'est qu'un signal faible. Il n'est écarté qu'avec la confirmation lexicale
+   **et** s'il porte moins de 1 500 caractères : un bandeau est court. Il n'est jamais « la couche
+   qui est le contenu » : cette règle ne vaut que pour un dialogue (la fiche ouverte en modale).
+   Mesuré : les 4 535 caractères de la liste des résultats bienici sont dans un panneau fixe, qui
+   contient aussi les mots « partenaires » et « Paramétrer ».
+6. **La région principale n'est jamais dans un formulaire, ni dans un élément fixe ou collant qui
+   porte moins de la moitié du texte de la page** : c'est une barre latérale. Un élément fixe qui
+   en porte la moitié ou plus est la surface principale de la page. Mesuré : la carte de contact
+   d'une fiche bienici (fixe, 723 caractères sur 8 571) contient la mention CNIL de son
+   formulaire, et c'est elle que Romain a reçue le 25/09 en guise d'annonce.
+7. **La remontée vers le conteneur de la liste va jusqu'à douze niveaux**, et non six. Sur la
+   page de résultats, le bloc le plus dense (la description de l'annonce mise en avant) est plus
+   profond que six niveaux sous le conteneur des résultats.
+8. **Lexique de consentement resserré.** « partenaires » et « Paramétrer » en sortent, trop
+   courants sur une page ordinaire. Il reste les mots qui ne désignent que le consentement, et
+   les boutons d'acceptation ou de refus.
+9. **Une question ou une exclamation n'est pas un fait.** Un libellé qui contient `?` ou `!`, ou
+   une valeur qui finit par `!`, est un encart publicitaire (« Besoin de déménager ? Comparez les
+   déménageurs ! »).
+
+Résultat de la sonde après ces corrections (`notes/corpus/comparaison.md`) :
+- page de résultats bienici → `list`, 24 entrées ;
+- fiche → `listing`, 5 faits : prix, date du DPE, chauffage, fibre, et « classe G » ;
+- Wikipédia → `article`.
+
+Rappel pour la « valeur chiffrée » : c'est un nombre accompagné d'une devise ou d'une des unités
+listées, jamais un nombre seul. « 21 langues » (au-dessus du titre d'un article Wikipédia) n'en
+est pas une. Faute de ce rappel, l'infobox de l'article « Coati » faisait classer la page en
+`listing`.
+
+#### Faits — `context.facts`
+
+Un fait est une paire `{ "label": string, "value": string }` **lue à l'écran**, jamais déduite ni
+calculée. Formes reconnues, dans la région principale et ses voisins, hors couches exclues, hors
+`nav`, `footer`, `[role=navigation]`, `[role=contentinfo]`, hors `header` / `[role=banner]` de
+premier niveau (celui du site, pas celui d'un `article`), hors `[contenteditable]` et hors
+entrées d'une liste :
+
+1. **Liste de définitions** : chaque `dt` associé aux `dd` qui le suivent (plusieurs `dd`
+   joints par `", "`).
+2. **Ligne à deux cellules** : un `tr` d'exactement deux cellules (`th` + `td` ou `td` + `td`).
+3. **Paire adjacente répétée** : un élément ayant exactement deux enfants porteurs de texte, le
+   premier court (le libellé), le second la valeur — **seulement** s'il a au moins 2 frères de
+   même forme (une grille de caractéristiques : « Prix au m² / 5 214 € », « DPE / D »…). Une paire
+   isolée n'est pas un fait.
+4. **Ligne « libellé : valeur »** : un élément sans enfant de bloc dont tout le texte visible
+   tient sur une ligne de la forme `libellé : valeur`, le libellé sans ponctuation de phrase
+   (`.`, `!`, `?`). Une phrase de prose qui contient deux-points n'en est pas une : le libellé
+   dépasse la borne, ou contient une ponctuation, ou l'élément a d'autres lignes.
+
+Lecture : texte visible uniquement (`innerText`), jamais un attribut (`title`, `alt`,
+`aria-label`, `value`, `data-*`), jamais la valeur d'un champ de formulaire. Espaces et retours à
+la ligne réduits à un espace, caractères de contrôle retirés, deux-points final du libellé retiré.
+
+Plafonds (contrat, vérifiés par le broker) :
+
+| Borne | Valeur |
+|---|---|
+| Nombre de faits | 40 |
+| Longueur d'un `label` | 60 caractères |
+| Longueur d'une `value` | 160 caractères |
+
+Ce qui tombe, dans cet ordre :
+
+1. une paire dont le libellé dépasse 60 caractères **n'est pas un fait** (c'est de la prose) :
+   écartée, pas tronquée ;
+2. une paire au libellé ou à la valeur vide : écartée ;
+3. les doublons exacts (`label` et `value` identiques après normalisation) : seule la première
+   occurrence reste — une fiche répète souvent son prix dans l'encart de contact ;
+4. une valeur de plus de 160 caractères : **tronquée** à 159 caractères suivis de `…` ;
+5. au-delà de 40 faits : on garde les 40 premiers **dans l'ordre du document** et on laisse tomber
+   la fin — les caractéristiques de tête de fiche passent avant celles du bas de page.
+
+Deux faits de même libellé et de valeurs différentes restent tous deux (ex. deux « Surface »).
+
+#### Entrées — `context.items`
+
+Pour `pageKind: "list"` seulement : une entrée par enfant répété retenu par la détection,
+`{ "title": string, "price"?: string, "location"?: string, "detail"?: string }`.
+
+- `title` : texte du premier titre (`h2` à `h4`) de l'entrée, sinon du premier lien, sinon sa
+  première ligne. Obligatoire : une entrée sans titre non vide est écartée.
+- `price` : la première valeur chiffrée à devise de l'entrée, **telle qu'affichée** (`"349 000 €"`),
+  jamais convertie. Absent si l'entrée n'en montre pas.
+- `location` : une ligne de l'entrée qui porte un code postal à 5 chiffres ou un département entre
+  parenthèses (`Nantes (44)`). Absent au moindre doute — la ligne reste alors dans `detail`.
+- `detail` : le reste du texte visible de l'entrée, lignes jointes par `" · "`, sans ce qui est
+  déjà dans les trois autres champs.
+
+Lecture identique aux faits : texte visible, jamais un attribut. **Jamais le `href`** des liens :
+ni envoyé, ni suivi (une URL peut porter un jeton, cf. `url`).
+
+**Seul ce qui est affiché est lu.** Les entrées sont celles rendues dans le document au moment
+du clic, qu'elles soient ou non dans la partie visible du viewport. Le content script ne fait
+défiler rien, ne clique ni « page suivante », ni « voir plus », ni « charger plus », n'ouvre
+aucune entrée, n'émet aucune requête réseau. Une liste virtualisée ou paginée donne ce qu'elle a
+rendu, pas plus (règle du geste, CLAUDE.md règle 5). Les entrées sponsorisées ou mises en avant
+sont des entrées comme les autres ; si elles l'affichent (« Sponsorisé »), ce mot reste dans
+`detail`.
+
+Plafonds (contrat, vérifiés par le broker) :
+
+| Borne | Valeur |
+|---|---|
+| Nombre d'entrées | 40 |
+| `title` | 160 caractères |
+| `price` | 40 caractères |
+| `location` | 80 caractères |
+| `detail` | 200 caractères |
+
+Un champ trop long est tronqué à sa borne moins un, suivi de `…` ; `price` ou `location` trop
+long est plutôt omis (une « valeur » de 40 caractères n'est plus un prix). Au-delà de 40 entrées :
+les 40 premières dans l'ordre du document, la fin tombe. Le nombre d'entrées envoyées est le seul
+décompte que le broker connaisse.
+
+Pour `list`, `text` porte le texte visible de la région principale **hors entrées** (en-tête de
+résultats, rappel des filtres, total affiché par la page), dans le budget restant.
+
+#### Budget de taille
+
+Le plafond de 40 000 caractères, qui portait sur `text`, devient **un budget commun** :
+
+```
+text.length
++ Σ facts  (label.length + value.length)
++ Σ items  (title.length + price.length + location.length + detail.length)
+≤ 40 000
+```
+
+(`String.prototype.length`, en unités UTF-16, comme aujourd'hui.) Les plafonds de `facts`
+(40 × 220 = 8 800 caractères au plus) et d'`items` (40 × 480 = 19 200 au plus) laissent toujours
+au moins 20 800 caractères à `text`.
+
+Ordre de remplissage côté content script : `facts` ou `items` d'abord, `text` ensuite avec ce qui
+reste. **`text` est tronqué le premier**, par la fin, comme aujourd'hui. Motif : les faits et
+les entrées sont denses et déjà bornés ; c'est précisément eux que le texte en vrac faisait perdre.
+
+Côté broker, voir « Limites côté broker ».
+
+#### Compatibilité
+
+Un client antérieur à cet amendement n'envoie ni `pageKind`, ni `facts`, ni `items`. **Le broker
+se comporte alors exactement comme aujourd'hui** : même validation, même limite, même prompt
+octet pour octet (au nonce près). La même règle vaut pour chacun des cas suivants, traités comme
+un champ absent :
+
+- `pageKind` absent, ou valeur hors des quatre prévues (un client plus récent pourrait en
+  ajouter) → comportement `other` ;
+- `kind` différent de `page` (`youtube`, `selection`) → `pageKind`, `facts` et `items` ignorés ;
+- `facts` qui n'est pas un tableau, `items` qui n'est pas un tableau → champ ignoré ;
+- `facts` avec un `pageKind` autre que `listing`, `items` avec un `pageKind` autre que `list` →
+  champ ignoré (ni rendu, ni compté dans le budget) ;
+- élément de tableau qui n'a pas la forme attendue (`label` ou `value` non chaîne, `title`
+  absent, champ optionnel non chaîne) → cet élément ignoré, les autres gardés ;
+- `pageKind: "list"` sans aucune entrée valide, `pageKind: "listing"` sans aucun fait valide →
+  consigne `other`.
+
+Cette tolérance porte sur la **forme** ; les **plafonds** (nombre, longueurs, budget), eux, sont
+refusés net — voir « Limites côté broker ».
 
 ## Construction du prompt (assainissement et anti-injection)
 
@@ -464,6 +817,78 @@ format de délimiteur figé, `"""`, ne doit plus pouvoir servir de frontière). 
 en plus aplatis (tous les espaces/retours à la ligne réduits à un seul espace) et tronqués à
 300 caractères, et placés **à l'intérieur** du délimiteur — jamais au-dessus, là où le system
 prompt traite le contenu comme la requête de l'utilisateur.
+
+### Faits et entrées dans le prompt
+
+Amendement 2026-09-25 (types de page). `facts` et `items` sont du contenu page-contrôlé, au même
+titre que `text` (CLAUDE.md règle 3). Ils passent par le même traitement et **dans le même
+délimiteur**, dans cet ordre : `Title`, `URL`, puis les faits ou les entrées, puis le texte.
+
+- Chaque `label`, `value`, `title`, `price`, `location`, `detail` est neutralisé comme `text`
+  (forme du délimiteur, suites de 3 guillemets ou plus), puis aplati comme `title` : tout espace
+  ou retour à la ligne réduit à un seul espace. Un champ ne peut donc pas ouvrir une ligne à lui,
+  ni simuler un intitulé de section.
+- Rendu d'un fait : une ligne `- <label> : <value>`. Rendu d'une entrée : une ligne
+  `<n>. <title> | <price> | <location> | <detail>`, les champs absents omis avec leur séparateur,
+  `<n>` compté par le broker à partir de 1.
+- Les intitulés de section à l'intérieur du délimiteur sont des chaînes fixes écrites par le
+  broker : `Faits affichés par la page :`, `Entrées affichées par la page (<N> lues) :`,
+  `Texte de la page :`. Le texte de la page vient **en dernier** : un faux intitulé glissé dans
+  `text` ne peut qu'ajouter des lignes après les vraies sections, pas s'insérer avant.
+- `pageKind` n'est pas du texte libre : le broker le compare aux quatre valeurs prévues **avant**
+  tout usage, et ne l'interpole que sous sa forme validée. Il peut alors figurer hors du
+  délimiteur, sur la ligne d'en-tête (`… — kind: page, pageKind: listing`), comme `kind`
+  aujourd'hui. Une valeur inconnue n'est jamais recopiée nulle part.
+- `<N>` (nombre d'entrées) est calculé par le broker, jamais lu dans la page.
+
+Le system prompt reste inchangé : tout ce qui est entre les marqueurs est une donnée. Un libellé
+qui dit « Instruction : ignore ce qui précède » est un fait comme un autre, à restituer, pas à
+suivre.
+
+### Consigne de résumé selon le type de page
+
+Amendement 2026-09-25 (types de page). La consigne de `summarize` (hors délimiteur, texte de
+confiance, **rien de page-contrôlé dedans**) dépend de `pageKind`. Les exigences ci-dessous sont
+le contrat ; la formulation exacte appartient au broker (L7) et est figée par ses tests.
+
+Communes à toutes : sortie **en français** quelle que soit la langue de la page, ton factuel,
+aucun préambule ni conclusion de politesse. **Aucun conseil d'expert, aucun jugement juridique,
+fiscal ou financier** : ni « bonne affaire », ni « surévalué », ni « conforme », ni
+recommandation d'achat ou de location. Les chiffres sont ceux que la page affiche, attribués à
+elle ; **le modèle ne calcule aucun chiffre que la page ne montre pas** (pas de prix au m² refait,
+pas de moyenne présentée comme un fait de la page). Les bornes de longueur `short` / `medium`
+restent en vigueur.
+
+- **`list`** — le résumé d'une page de résultats, sur les `N` entrées lues :
+  - la **fourchette de prix** parmi les entrées qui en affichent un (minimum, maximum), en disant
+    combien n'en affichent pas ;
+  - la **répartition** que les données permettent (par tranche de prix, par lieu, par type), sans
+    en inventer une que les entrées ne portent pas ;
+  - les **entrées qui sortent du lot**, désignées par leur titre tel qu'affiché, et ce qui les
+    distingue sur la page ;
+  - le décompte : « `N` annonces lues sur cette page ». **Jamais un nombre total supérieur à `N`
+    présenté comme su** ; si le texte de la page affiche un total (« 1 234 résultats »), il peut
+    être cité, attribué à la page (« la page annonce 1 234 résultats »), distinct de `N`.
+  - Pas de ligne « Ce que l'annonce ne dit pas » ; la ligne finale « À retenir : » reste.
+- **`listing`** — le résumé d'une fiche, en trois temps, dans cet ordre :
+  1. **Les faits** : les caractéristiques affichées (prix, surface, prix au m², DPE, charges, taxe
+     foncière… selon ce que la page montre), reprises telles quelles, les plus déterminantes
+     d'abord ; `short` en garde 6 au plus, `medium` 12 au plus.
+  2. **Points à vérifier** : les questions qu'un lecteur attentif poserait, ou les documents qu'il
+     demanderait, **à partir de ce que la page montre** (une incohérence entre deux faits, un fait
+     que le texte contredit, un chiffre sans unité ou sans date) — formulés comme des questions à
+     poser, jamais comme un avis ; `short` 2 à 3, `medium` 4 à 6.
+  3. **Ce qu'en dit l'annonce** : le texte descriptif du vendeur ou de l'agence, résumé et
+     **attribué** (« selon l'annonce… »), en dernier.
+  - Ligne finale obligatoire, commençant par « Ce que l'annonce ne dit pas : », qui énumère les
+    informations usuelles pour ce genre d'objet que ni les faits ni le texte ne donnent. Si rien
+    ne manque, la ligne le dit. Elle **remplace** « À retenir : » pour ce type.
+- **`article`** — la consigne d'aujourd'hui, inchangée.
+- **`other`** — la consigne d'aujourd'hui, inchangée. C'est aussi celle de tout cas de repli
+  (voir « Compatibilité »).
+
+`chat` n'a pas de consigne par type : les faits et les entrées figurent dans le contexte rendu
+(ci-dessus), la requête de l'utilisateur fait le reste.
 
 ## Fournisseur de modèle
 
@@ -670,6 +1095,17 @@ fournisseur. `provider.status` ne modifie aucun état du broker (hormis son cach
 - **Message invalide sans `id` lisible, après authentification** (JSON illisible, `id` absent) :
   ignoré, sans réponse ni fermeture — il n'y a pas d'`id` à qui répondre. Invalide avec un `id` :
   `error` `bad-request` pour cet `id` (inchangé).
+- **Budget du contexte de page : 40 000 caractères** pour `text` + `facts` + `items` (amendement
+  2026-09-25 (types de page) — voir « Budget de taille » sous « Context »). Le broker vérifie,
+  après avoir écarté les éléments de forme invalide (« Compatibilité ») : plus de 40 faits ou 40
+  entrées, un champ au-delà de sa borne, ou un total au-delà de 40 000 → `{"type":"error","code":
+  "context-too-large", ...}` pour cet `id`, sans appel au modèle, le `message` nommant la borne
+  franchie. Le broker **refuse, il ne tronque pas** : l'extension légitime respecte ces bornes, un
+  dépassement signale un client défaillant, et une troncature silencieuse côté broker cacherait le
+  défaut. Sans `facts` ni `items`, la vérification est exactement celle d'aujourd'hui (`text` seul).
+- **Journalisation des requêtes** : la ligne de réception d'un `summarize` / `chat` peut porter
+  `pageKind` validé et les **nombres** de faits et d'entrées ; jamais un libellé, une valeur, un
+  titre ni aucun autre contenu de page.
 
 ## Messages broker → client
 
@@ -731,6 +1167,12 @@ caractères de contrôle remplacés par `?`, coupées à 200 caractères.
   poignée de main, 1009 après) — voir « Limites côté broker ».
 - Aucune route HTTP ne modifie l'état du broker.
 - Le broker ne change jamais de fournisseur de lui-même.
+- Amendement 2026-09-25 (types de page). Un `context` sans `pageKind`, `facts` ni `items` produit
+  exactement la validation et le prompt d'avant l'amendement. Tout type de page douteux, inconnu
+  ou vide de données retombe sur ce comportement ; il ne produit jamais d'erreur.
+- Amendement 2026-09-25 (types de page). L'extraction lit, elle n'agit pas : aucun clic, aucun
+  défilement, aucune fermeture de bandeau, aucune requête réseau, aucun lien suivi pour remplir
+  `facts` ou `items`.
 
 ## Annexe — écarts de l'audit du jeton (§5), résolution
 
@@ -743,7 +1185,7 @@ Amendement 2026-09-25. Référence : `notes/audit_jeton_2026-09-25.md` §5.
 | 3 | 4401 « raison en clair » contre raison générique | Texte corrigé : raison générique `unauthorized` |
 | 4 | ID inconnu « retombe sur `/pair` » | Texte corrigé : refus à l'`Origin`, remède = `allowedExtensionIds` + redémarrage ; chemin un clic retiré |
 | 5 | Port personnalisé « marche par collage » | Texte corrigé : port 8787 figé ; le code cesse de lire `port` |
-| 6 | « Collé une fois » | Texte corrigé (Chromium : jamais ; Firefox installé : une fois par installation ; temporaire : une fois par chargement) ; le code ajoute l'appairage silencieux des uuid épinglés |
+| 6 | « Collé une fois » | Texte corrigé (Chromium : jamais ; Firefox installé : une fois par installation ; temporaire : une fois par profil, prouvé le 25/09) ; le code ajoute l'appairage silencieux des uuid épinglés |
 | 7 | « Ne renvoie jamais le jeton » sans exception `/pair` | Texte corrigé : deux exceptions nommées |
 | 8 | Frontière « même compte » non appliquée | Texte précisé (« Frontière de menace ») ; le code ajoute `Host` et UID du pair |
 | 9 | Ré-appairage Firefox sans redémarrage promis | Le code change : liste relue à chaud ; texte : révocation = supprimer une ligne |

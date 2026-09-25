@@ -16,13 +16,59 @@ export type ErrorCode =
 
 export type ContextKind = "page" | "youtube" | "selection";
 
+// Amendement 2026-09-25 (types de page). Only meaningful when kind === "page"
+// — see docs/PROTOCOL.md "Types de page, faits et entrées". Anything outside
+// these four literals is not a PageKind: parseContext below drops it, and the
+// broker then behaves exactly as it did before this amendment ("other").
+export type PageKind = "list" | "listing" | "article" | "other";
+
+// A "libellé : valeur" pair read verbatim off the page (context.facts). Only
+// carried when pageKind === "listing" — see "Compatibilité".
+export interface Fact {
+  label: string;
+  value: string;
+}
+
+// One entry of a results page (context.items). Only carried when
+// pageKind === "list" — see "Compatibilité". `title` is the only required
+// field; a malformed/absent one drops the whole entry (parseItem below).
+export interface Item {
+  title: string;
+  price?: string;
+  location?: string;
+  detail?: string;
+}
+
 export interface Context {
   kind: ContextKind;
   url?: string;
   title?: string;
   text?: string;
   videoId?: string;
+
+  // Amendement 2026-09-25 (types de page). Optional, page-controlled data —
+  // same trust level as `text` (CLAUDE.md rule #3). See model.ts's
+  // renderContext for how they're fenced, and server.ts's
+  // contextBudgetError for the numeric caps ("Limites côté broker").
+  pageKind?: PageKind;
+  facts?: Fact[];
+  items?: Item[];
 }
+
+// Amendement 2026-09-25 (types de page) — "Faits", "Entrées", "Budget de
+// taille". These are the contract's numeric bounds: parseContext below only
+// enforces *shape* (drops a malformed field/element, never rejects the whole
+// message — "Compatibilité"); a numeric breach is refused outright by
+// server.ts's contextBudgetError, never silently truncated here ("Limites
+// côté broker": the broker refuses, it never truncates).
+export const FACTS_MAX = 40;
+export const FACT_LABEL_MAX = 60;
+export const FACT_VALUE_MAX = 160;
+export const ITEMS_MAX = 40;
+export const ITEM_TITLE_MAX = 160;
+export const ITEM_PRICE_MAX = 40;
+export const ITEM_LOCATION_MAX = 80;
+export const ITEM_DETAIL_MAX = 200;
 
 export interface PromptEntry {
   name: string;
@@ -291,6 +337,44 @@ export function isValidApiKeyFormat(value: string): boolean {
   return value.length <= API_KEY_MAX_LEN && API_KEY_RE.test(value);
 }
 
+function isPageKind(v: unknown): v is PageKind {
+  return v === "list" || v === "listing" || v === "article" || v === "other";
+}
+
+// A single facts[] element: kept only if both fields are strings — see
+// "Compatibilité": "label ou value non chaîne" drops the element, others
+// stay. No length/emptiness check here — that's a numeric bound, see
+// FACT_LABEL_MAX/FACT_VALUE_MAX above and server.ts's contextBudgetError.
+function parseFact(v: unknown): Fact | undefined {
+  if (!isRecord(v)) return undefined;
+  if (typeof v.label !== "string" || typeof v.value !== "string") return undefined;
+  return { label: v.label, value: v.value };
+}
+
+function parseFacts(v: unknown): Fact[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  return v.map(parseFact).filter((f): f is Fact => f !== undefined);
+}
+
+// A single items[] element. `title` absent/non-string/empty drops the whole
+// entry — "Entrées": "une entrée sans titre non vide est écartée". Each
+// optional field is dropped on its own (not the whole entry) when present
+// but not a string — "Compatibilité": "champ optionnel non chaîne".
+function parseItem(v: unknown): Item | undefined {
+  if (!isRecord(v)) return undefined;
+  if (typeof v.title !== "string" || v.title.length === 0) return undefined;
+  const item: Item = { title: v.title };
+  if (typeof v.price === "string") item.price = v.price;
+  if (typeof v.location === "string") item.location = v.location;
+  if (typeof v.detail === "string") item.detail = v.detail;
+  return item;
+}
+
+function parseItems(v: unknown): Item[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  return v.map(parseItem).filter((i): i is Item => i !== undefined);
+}
+
 function parseContext(v: unknown): Context | undefined {
   if (v === undefined) return undefined;
   if (!isRecord(v)) return undefined;
@@ -301,6 +385,25 @@ function parseContext(v: unknown): Context | undefined {
   if (typeof v.title === "string") context.title = v.title;
   if (typeof v.text === "string") context.text = v.text;
   if (typeof v.videoId === "string") context.videoId = v.videoId;
+
+  // Amendement 2026-09-25 (types de page). pageKind/facts/items only exist
+  // for kind === "page" — "Compatibilité": "kind différent de page →
+  // pageKind, facts et items ignorés". A pageKind outside the four known
+  // values is dropped (undefined), same as an absent one — the client
+  // behaves exactly as before this amendment ("other").
+  if (kind === "page") {
+    if (isPageKind(v.pageKind)) context.pageKind = v.pageKind;
+    // "facts avec un pageKind autre que listing, items avec un pageKind
+    // autre que list → champ ignoré (ni rendu, ni compté dans le budget)".
+    if (context.pageKind === "listing") {
+      const facts = parseFacts(v.facts);
+      if (facts !== undefined) context.facts = facts;
+    }
+    if (context.pageKind === "list") {
+      const items = parseItems(v.items);
+      if (items !== undefined) context.items = items;
+    }
+  }
   return context;
 }
 

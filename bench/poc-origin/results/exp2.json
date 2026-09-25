@@ -1,0 +1,22 @@
+{
+  "initial": {
+    "extensionHandle": "poc-origin@localhost",
+    "origin": "moz-extension://3c519474-c768-4f3f-a2fb-27291402a53b"
+  },
+  "reload": {
+    "extensionHandle": "poc-origin@localhost",
+    "origin": "moz-extension://3c519474-c768-4f3f-a2fb-27291402a53b"
+  },
+  "reloadError": null,
+  "restart": {
+    "extensionHandle": "poc-origin@localhost",
+    "origin": "moz-extension://3c519474-c768-4f3f-a2fb-27291402a53b"
+  },
+  "verdict": {
+    "uuidInitial": "moz-extension://3c519474-c768-4f3f-a2fb-27291402a53b",
+    "uuidAfterReload": "moz-extension://3c519474-c768-4f3f-a2fb-27291402a53b",
+    "uuidAfterRestart": "moz-extension://3c519474-c768-4f3f-a2fb-27291402a53b",
+    "sameAcrossReload": true,
+    "sameAcrossRestart": true
+  }
+}

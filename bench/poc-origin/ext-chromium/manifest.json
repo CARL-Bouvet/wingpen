@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "poc-origin-chromium",
+  "version": "0.0.1",
+  "description": "Isolated PoC for lot L5 (goal-6t00P5LW). Tests whether declarativeNetRequest can forge the WebSocket Origin header Wingpen's broker relies on, from a service worker, an extension page, and an offscreen document. Never wired into Wingpen. Run only by the admin in Brave (this sandbox has no AF_UNIX, Chromium cannot start here).",
+  "permissions": ["declarativeNetRequest", "declarativeNetRequestWithHostAccess", "offscreen", "tabs"],
+  "host_permissions": ["http://127.0.0.1/*", "ws://127.0.0.1/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "ruleset_1",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  },
+  "content_security_policy": {
+    "extension_pages": "default-src 'self'; connect-src ws://127.0.0.1:18801 'self'"
+  }
+}

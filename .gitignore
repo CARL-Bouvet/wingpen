@@ -10,3 +10,4 @@ notes/
 .bun-tmp/
 .claude/
 extension-key.pem
+.tmp/

@@ -26,7 +26,16 @@ import { ProviderStatusCache } from "./provider-status.ts";
 import {
   MAX_MESSAGE_BYTES,
   parseClientMessage,
+  FACTS_MAX,
+  FACT_LABEL_MAX,
+  FACT_VALUE_MAX,
+  ITEMS_MAX,
+  ITEM_TITLE_MAX,
+  ITEM_PRICE_MAX,
+  ITEM_LOCATION_MAX,
+  ITEM_DETAIL_MAX,
   type ClientMessage,
+  type Context,
   type ProviderStatus,
   type ServerMessage,
   type SettingsSetMessage,
@@ -52,6 +61,55 @@ export function contextTooLarge(text: string | undefined): boolean {
   return typeof text === "string" && text.length > MAX_CONTEXT_CHARS;
 }
 
+// Amendement 2026-09-25 (types de page) — "Budget de taille" / "Limites côté
+// broker". `text` + `facts` + `items` now share the same 40 000-character
+// budget, and each of `facts`/`items` has its own count and per-field length
+// caps. Checked AFTER protocol.ts's parseContext has already dropped
+// malformed-shaped elements ("après avoir écarté les éléments de forme
+// invalide") — every count/length here is on data that is at least
+// well-formed. On any breach the broker refuses outright — it never
+// truncates (a legitimate client already respects every one of these
+// bounds; a breach signals a broken client, not something to paper over).
+// Returns the exact bound crossed (for the error's `message`, which "nomme
+// la borne franchie"), or undefined when the context fits.
+export function contextBudgetError(context: Context | undefined): string | undefined {
+  if (!context) return undefined;
+  const facts = context.facts ?? [];
+  const items = context.items ?? [];
+
+  if (facts.length > FACTS_MAX) return `facts exceeds ${FACTS_MAX} entries`;
+  if (items.length > ITEMS_MAX) return `items exceeds ${ITEMS_MAX} entries`;
+
+  for (const fact of facts) {
+    if (fact.label.length > FACT_LABEL_MAX) return `fact label exceeds ${FACT_LABEL_MAX} characters`;
+    if (fact.value.length > FACT_VALUE_MAX) return `fact value exceeds ${FACT_VALUE_MAX} characters`;
+  }
+  for (const item of items) {
+    if (item.title.length > ITEM_TITLE_MAX) return `item title exceeds ${ITEM_TITLE_MAX} characters`;
+    if (item.price !== undefined && item.price.length > ITEM_PRICE_MAX) {
+      return `item price exceeds ${ITEM_PRICE_MAX} characters`;
+    }
+    if (item.location !== undefined && item.location.length > ITEM_LOCATION_MAX) {
+      return `item location exceeds ${ITEM_LOCATION_MAX} characters`;
+    }
+    if (item.detail !== undefined && item.detail.length > ITEM_DETAIL_MAX) {
+      return `item detail exceeds ${ITEM_DETAIL_MAX} characters`;
+    }
+  }
+
+  const total =
+    (context.text?.length ?? 0) +
+    facts.reduce((sum, f) => sum + f.label.length + f.value.length, 0) +
+    items.reduce(
+      (sum, it) =>
+        sum + it.title.length + (it.price?.length ?? 0) + (it.location?.length ?? 0) + (it.detail?.length ?? 0),
+      0,
+    );
+  if (total > MAX_CONTEXT_CHARS) return `context exceeds ${MAX_CONTEXT_CHARS} characters`;
+
+  return undefined;
+}
+
 // --- A2: one journal line per request -------------------------------------
 //
 // Before this, the broker only logged handshake rejections and its own
@@ -66,9 +124,22 @@ export function contextTooLarge(text: string | undefined): boolean {
 // in it could forge journal lines (including these very grant/reject-shaped
 // ones). Every client-supplied value in these two lines goes through
 // sanitizeLogValue(), same as Host/Origin elsewhere in this file.
-export function logRequestReceived(type: string, id: string, contextKind: string | undefined, textLength: number): void {
+// Amendement 2026-09-25 (types de page) — "Limites côté broker": "la ligne de
+// réception ... peut porter pageKind validé et les nombres de faits et
+// d'entrées ; jamais un libellé, une valeur, un titre ni aucun autre contenu
+// de page." pageKind/factsCount/itemsCount are optional so chat/act (which
+// carry no pageKind) keep their existing "-"/0/0 shape.
+export function logRequestReceived(
+  type: string,
+  id: string,
+  contextKind: string | undefined,
+  textLength: number,
+  pageKind?: string,
+  factsCount = 0,
+  itemsCount = 0,
+): void {
   console.log(
-    `wingpen-broker: request received type=${type} id=${sanitizeLogValue(id)} context=${contextKind ?? "-"} textLength=${textLength}`,
+    `wingpen-broker: request received type=${type} id=${sanitizeLogValue(id)} context=${contextKind ?? "-"} textLength=${textLength} pageKind=${pageKind ?? "-"} facts=${factsCount} items=${itemsCount}`,
   );
 }
 
@@ -456,9 +527,23 @@ function handleMessage(
     case "chat": {
       const startedAt = Date.now();
       const textLength = message.text.length + (message.context?.text?.length ?? 0);
-      logRequestReceived("chat", message.id, message.context?.kind, textLength);
-      if (contextTooLarge(message.text) || contextTooLarge(message.context?.text)) {
+      logRequestReceived(
+        "chat",
+        message.id,
+        message.context?.kind,
+        textLength,
+        message.context?.pageKind,
+        message.context?.facts?.length ?? 0,
+        message.context?.items?.length ?? 0,
+      );
+      if (contextTooLarge(message.text)) {
         send(ws, { type: "error", id: message.id, code: "context-too-large", message: "text exceeds 40000 characters" });
+        logRequestCompleted(message.id, "error:context-too-large", Date.now() - startedAt);
+        return;
+      }
+      const chatBudgetError = contextBudgetError(message.context);
+      if (chatBudgetError) {
+        send(ws, { type: "error", id: message.id, code: "context-too-large", message: chatBudgetError });
         logRequestCompleted(message.id, "error:context-too-large", Date.now() - startedAt);
         return;
       }
@@ -473,9 +558,18 @@ function handleMessage(
     }
     case "summarize": {
       const startedAt = Date.now();
-      logRequestReceived("summarize", message.id, message.context.kind, message.context.text?.length ?? 0);
-      if (contextTooLarge(message.context.text)) {
-        send(ws, { type: "error", id: message.id, code: "context-too-large", message: "context exceeds 40000 characters" });
+      logRequestReceived(
+        "summarize",
+        message.id,
+        message.context.kind,
+        message.context.text?.length ?? 0,
+        message.context.pageKind,
+        message.context.facts?.length ?? 0,
+        message.context.items?.length ?? 0,
+      );
+      const summarizeBudgetError = contextBudgetError(message.context);
+      if (summarizeBudgetError) {
+        send(ws, { type: "error", id: message.id, code: "context-too-large", message: summarizeBudgetError });
         logRequestCompleted(message.id, "error:context-too-large", Date.now() - startedAt);
         return;
       }

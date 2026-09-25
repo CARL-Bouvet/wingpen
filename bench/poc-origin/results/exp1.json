@@ -1,0 +1,28 @@
+{
+  "installedId": "poc-origin@localhost",
+  "installError": null,
+  "realConnection": {
+    "t": "2026-09-25T05:58:25.832Z",
+    "label": "firefox-real-origin",
+    "origin": "moz-extension://76998ade-ccbc-4fe8-9298-dd0dfc6c69b0",
+    "host": "127.0.0.1:18801",
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64; rv:155.0) Gecko/20100101 Firefox/155.0",
+    "matchesWingpenChromeId": false,
+    "kind": "moz-extension"
+  },
+  "forgedConnection": {
+    "t": "2026-09-25T05:58:27.327Z",
+    "label": "firefox-forged-origin",
+    "origin": "chrome-extension://hehlgipomfminodhahcjbencblepjhah",
+    "host": "127.0.0.1:18801",
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64; rv:155.0) Gecko/20100101 Firefox/155.0",
+    "matchesWingpenChromeId": true,
+    "kind": "chrome-wingpen-forged-or-real"
+  },
+  "consoleEntries": [],
+  "verdict": {
+    "realOriginObserved": "moz-extension://76998ade-ccbc-4fe8-9298-dd0dfc6c69b0",
+    "forgedOriginObserved": "chrome-extension://hehlgipomfminodhahcjbencblepjhah",
+    "forgerySucceeded": true
+  }
+}

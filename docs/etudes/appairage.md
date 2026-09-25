@@ -181,8 +181,10 @@ Du plus sérieux au plus mineur.
    que `GET /v1/models` ne soit pas facturé est probable, mais pas écrit par Anthropic
    (source 30). Une clé refusée se découvre à la première requête.
 8. **Stabilité de l'uuid Firefox en chargement temporaire avec un ID gecko.** Les sources se
-   contredisent (C5, sources 18, 19, 20) ; le protocole suppose un nouvel uuid par chargement, ce
-   qui est le cas le plus prudent. À trancher par l'essai.
+   contredisaient (C5, sources 18, 19, 20). **Tranché par l'essai le 25/09** : avec un ID gecko,
+   l'uuid reste le même au rechargement et au redémarrage, sur un même profil
+   (`docs/etudes/preuves-origine.md`). Et la réécriture de l'`Origin` (C2, C3) est prouvée sur les
+   deux navigateurs, ce qui renforce la recommandation B.
 9. **`allowedExtensionIds` demande un redémarrage du broker** ; seule la liste d'uuid est relue à
    chaud.
 10. **Gestes humains non encore éprouvés** : la ligne d'état du panneau dans Brave, le collage

@@ -1,0 +1,18 @@
+{
+  "installedId": "wingpen@localhost",
+  "installError": null,
+  "subscribeError": null,
+  "brokerConnectionAttempt": {
+    "t": "2026-09-25T05:58:56.719Z",
+    "label": "unlabeled",
+    "origin": "moz-extension://96da09ce-471c-49bb-b1ef-26cbacb63e67",
+    "host": "127.0.0.1:18801",
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64; rv:155.0) Gecko/20100101 Firefox/155.0",
+    "matchesWingpenChromeId": false,
+    "kind": "moz-extension"
+  },
+  "totalLogEntries": 0,
+  "errorEntries": [],
+  "stdoutExceptionLines": [],
+  "allLogEntries": []
+}

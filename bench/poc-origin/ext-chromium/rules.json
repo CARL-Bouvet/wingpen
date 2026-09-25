@@ -1,0 +1,22 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "chrome-extension://hehlgipomfminodhahcjbencblepjhah"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "|ws://127.0.0.1:18801/",
+      "resourceTypes": [
+        "websocket"
+      ]
+    }
+  }
+]

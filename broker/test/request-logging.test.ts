@@ -5,12 +5,14 @@
 // or failed request from).
 
 import { describe, expect, test, afterEach, mock } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { startServer } from "../src/server.ts";
 import { __setQueryImplForTests, __resetQueryImplForTests } from "../src/model.ts";
+import {
+  __setExecFileImplForTests,
+  __resetExecFileImplForTests,
+} from "../src/providers/claude-cli.ts";
 import type { ServerMessage } from "../src/protocol.ts";
+import { makeTmpDir } from "./helpers/tmp-dir.ts";
 
 const ALLOWED_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SECRET = "0123456789abcdef0123456789abcdef";
@@ -21,7 +23,7 @@ let logSpy: ReturnType<typeof mock>;
 let originalLog: typeof console.log;
 
 function boot() {
-  const dataDir = mkdtempSync(join(tmpdir(), "wingpen-logging-"));
+  const dataDir = makeTmpDir("wingpen-logging-");
   const server = startServer({ port: 0, allowedExtensionIds: [ALLOWED_ID] }, SECRET, { dataDir });
   servers.push(server);
   return server;
@@ -61,6 +63,7 @@ afterEach(() => {
   for (const s of servers) s.stop(true);
   servers = [];
   __resetQueryImplForTests();
+  __resetExecFileImplForTests();
   console.log = originalLog;
 });
 
@@ -140,6 +143,58 @@ describe("A2 — one journal line per request", () => {
     const completed = lines.find((l) => l.includes("request completed") && l.includes("id=log-2"));
     expect(completed).toBeDefined();
     expect(completed).toContain("outcome=error:context-too-large");
+  });
+
+  // 2026-09-26 amendment (docs/PROTOCOL.md): the completed line for a model
+  // error now carries `reason="…"` — the CLI's own words (or whatever the
+  // thrown Error says), not just the bare outcome code. Before this, a failed
+  // request left nothing in the journal to tell "not logged in" apart from
+  // "binary missing" apart from a genuine bug — see providers/claude-cli.ts's
+  // cliReasonText.
+  test("a model-unavailable error's completed line carries reason=\"…\" with the CLI's own words", async () => {
+    originalLog = console.log;
+    logSpy = mock(() => {});
+    console.log = logSpy as unknown as typeof console.log;
+
+    // Not an auth failure (see the fake result text below), so
+    // looksLikeAuthFailure is false and streamAnswer falls back to
+    // probeAuthFailure() — mock it to a cheap "logged in" answer so this test
+    // never spawns the real `claude` CLI (see model.test.ts's identical note).
+    __setExecFileImplForTests(((_file: string, args: string[], _opts: unknown, cb: (...a: any[]) => void) => {
+      if (args[0] === "auth") cb(null, JSON.stringify({ loggedIn: true }), "");
+      else cb(null, "pong", "");
+    }) as any);
+
+    __setQueryImplForTests((() => {
+      return (async function* () {
+        yield { type: "result", is_error: true, result: "Some unrelated internal crash" };
+        throw new Error("Claude Code process exited with code 1");
+      })();
+    }) as any);
+    const server = boot();
+    const ws = await connectAndAuth(server);
+
+    const errorMsg = new Promise<ServerMessage>((resolve) => {
+      const onMessage = (event: MessageEvent) => {
+        const msg = JSON.parse(event.data as string);
+        if (msg.type === "error" && msg.id === "log-reason") {
+          ws.removeEventListener("message", onMessage);
+          resolve(msg);
+        }
+      };
+      ws.addEventListener("message", onMessage);
+    });
+    ws.send(JSON.stringify({ type: "chat", id: "log-reason", text: "hello" }));
+    const msg = await errorMsg;
+    ws.close();
+
+    expect(msg).toMatchObject({ code: "model-unavailable" });
+    expect((msg as any).message).toContain("Some unrelated internal crash");
+    const lines = loggedLines();
+    const completed = lines.find((l) => l.includes("request completed") && l.includes("id=log-reason"));
+    expect(completed).toBeDefined();
+    expect(completed).toContain("outcome=error:model-unavailable");
+    expect(completed).toContain('reason="Claude Code process exited with code 1: Some unrelated internal crash"');
   });
 
   // L4 (lot7 security review): `id` is entirely client-supplied — a control

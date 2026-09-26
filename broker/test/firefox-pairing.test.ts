@@ -10,11 +10,11 @@
 // from disk at every WebSocket open — see docs/PROTOCOL.md "Cas Firefox".
 
 import { describe, expect, test, afterEach } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { startServer } from "../src/server.ts";
 import { loadFirefoxPins } from "../src/config.ts";
+import { makeTmpDir } from "./helpers/tmp-dir.ts";
 
 const ALLOWED_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SECRET = "0123456789abcdef0123456789abcdef";
@@ -70,7 +70,7 @@ async function connect(
 
 describe("Firefox pairing — moz-extension:// origin", () => {
   test("a moz-extension origin with a valid secret is accepted and its uuid pinned", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "wingpen-firefox-pair-"));
+    const dataDir = makeTmpDir("wingpen-firefox-pair-");
     const server = boot(dataDir);
 
     const result = await connect(server, `moz-extension://${FIREFOX_UUID}`, SECRET);
@@ -79,7 +79,7 @@ describe("Firefox pairing — moz-extension:// origin", () => {
   });
 
   test("a moz-extension origin with an invalid secret is rejected and nothing is pinned", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "wingpen-firefox-pair-"));
+    const dataDir = makeTmpDir("wingpen-firefox-pair-");
     const server = boot(dataDir);
 
     const result = await connect(server, `moz-extension://${FIREFOX_UUID}`, "wrong-secret-wrong-secret-wrong!");
@@ -91,7 +91,7 @@ describe("Firefox pairing — moz-extension:// origin", () => {
   // Amendement 2026-09-25: pins are a LIST — pinning a second uuid does not
   // evict or exclude the first (replaces the old single-value behaviour).
   test("once one uuid is pinned, a second moz-extension uuid with a valid secret is ALSO accepted and pinned", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "wingpen-firefox-pair-"));
+    const dataDir = makeTmpDir("wingpen-firefox-pair-");
     const server = boot(dataDir);
 
     const first = await connect(server, `moz-extension://${FIREFOX_UUID}`, SECRET);
@@ -105,7 +105,7 @@ describe("Firefox pairing — moz-extension:// origin", () => {
   });
 
   test("once one uuid is pinned, a second, DIFFERENT uuid with no secret is refused (silent grant needs pinning first)", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "wingpen-firefox-pair-"));
+    const dataDir = makeTmpDir("wingpen-firefox-pair-");
     const server = boot(dataDir);
 
     const first = await connect(server, `moz-extension://${FIREFOX_UUID}`, SECRET);
@@ -118,7 +118,7 @@ describe("Firefox pairing — moz-extension:// origin", () => {
   });
 
   test("once pinned, the same uuid keeps connecting normally, including with no secret (silent grant)", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "wingpen-firefox-pair-"));
+    const dataDir = makeTmpDir("wingpen-firefox-pair-");
     const server = boot(dataDir);
 
     const first = await connect(server, `moz-extension://${FIREFOX_UUID}`, SECRET);
@@ -132,7 +132,7 @@ describe("Firefox pairing — moz-extension:// origin", () => {
   });
 
   test("a pin recorded by a previous broker process is honoured after a restart, without needing a restart to see it", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "wingpen-firefox-pair-"));
+    const dataDir = makeTmpDir("wingpen-firefox-pair-");
     const first = boot(dataDir);
     await connect(first, `moz-extension://${FIREFOX_UUID}`, SECRET);
     first.stop(true);
@@ -147,7 +147,7 @@ describe("Firefox pairing — moz-extension:// origin", () => {
   // dataDir pinning a new uuid) takes effect on the very next connection of
   // the FIRST process, no restart needed.
   test("a pin added by another process on the same dataDir is honoured on the next connection, without a restart", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "wingpen-firefox-pair-"));
+    const dataDir = makeTmpDir("wingpen-firefox-pair-");
     const server = boot(dataDir);
 
     // Not yet pinned on `server`'s in-memory view (it has none — the store
@@ -166,7 +166,7 @@ describe("Firefox pairing — moz-extension:// origin", () => {
   });
 
   test("an unrelated origin is never accepted, pinned or not", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "wingpen-firefox-pair-"));
+    const dataDir = makeTmpDir("wingpen-firefox-pair-");
     const server = boot(dataDir);
 
     const result = await connect(server, "https://example.com", SECRET);
@@ -175,7 +175,7 @@ describe("Firefox pairing — moz-extension:// origin", () => {
   });
 
   test("chrome-extension pairing still works unchanged alongside Firefox support", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "wingpen-firefox-pair-"));
+    const dataDir = makeTmpDir("wingpen-firefox-pair-");
     const server = boot(dataDir);
 
     const result = await connect(server, `chrome-extension://${ALLOWED_ID}`, SECRET);
@@ -190,7 +190,7 @@ describe("Firefox pairing — moz-extension:// origin", () => {
 // trusting the value computed at open().
 describe("L1 — pin list re-evaluated fresh at hello time, not trusted from open()", () => {
   test("a pin removed by hand between open() and hello is refused, even though it was pinned when the socket opened", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "wingpen-firefox-pair-"));
+    const dataDir = makeTmpDir("wingpen-firefox-pair-");
     const server = boot(dataDir);
 
     // Pin it first — a normal successful pairing.
@@ -236,7 +236,7 @@ describe("L1 — pin list re-evaluated fresh at hello time, not trusted from ope
 // out either).
 describe("L2 — grant() fails closed", () => {
   test("a throw while finalizing the grant rejects the handshake instead of leaving the socket half-open", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "wingpen-firefox-pair-"));
+    const dataDir = makeTmpDir("wingpen-firefox-pair-");
     const server = boot(dataDir);
 
     // grant() computes `new Date().toISOString()` before recording the

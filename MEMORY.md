@@ -1,67 +1,34 @@
 # Wingpen — mémoire durable
 
-Réinjecté chaque session. Invariants seulement. L'état daté va dans `JOURNAL.md`.
+Réinjecté chaque session : invariants seulement, ~30 lignes. L'état daté va dans `JOURNAL.md`, les pièges détaillés dans `docs/PIEGES.md`.
 
-## Index de référence
-- Périmètre d'accès, prouvé ligne à ligne : `docs/PERIMETRE.md`. Installation Firefox + signature AMO : `docs/FIREFOX.md`. Service systemd : `docs/INSTALL.md`.
-- Contrat extension ↔ broker : `docs/PROTOCOL.md` (fait autorité).
-- Décisions figées + motifs : `docs/DECISIONS.md` (P1-P17, T1-T19, L1-L2, règle du geste + son exception nommée, 9 risques).
-- Faisabilité du distribué payant : `docs/etudes/faisabilite.md`. Sept études brutes dans `docs/etudes/`.
-- Chaîne d'attaque : `docs/MENACE_chaine_navigateur.md`.
-- Appairage, transport et options WebSocket / Native Messaging : `docs/etudes/appairage.md` (25/09). Mesures : `docs/etudes/mesures-transport.md`, banc `bench/transport/`.
+## Index
+- Contrat extension ↔ broker : `docs/PROTOCOL.md` (fait autorité). Décisions et motifs : `docs/DECISIONS.md`. Périmètre prouvé ligne à ligne : `docs/PERIMETRE.md`.
+- Appairage et transport : `docs/etudes/appairage.md` ; usurpation prouvée : `docs/etudes/preuves-origine.md` ; menace : `docs/MENACE_chaine_navigateur.md` ; distribué payant : `docs/etudes/faisabilite.md`. Firefox et AMO : `docs/FIREFOX.md`. systemd : `docs/INSTALL.md`.
+- Nom, palette, inventaire des textes : `docs/design/`. Cours de Romain sur l'architecture : `~/projets/etudes/cours/05-wingpen/`.
 
-## Invariants d'architecture
-- L'extension ne détient aucun identifiant de modèle. Tout secret vit dans le broker local.
-- Broker : `127.0.0.1` seulement. Admission par `Host` + UID du pair (Linux, `/proc/net/tcp`), puis `Origin` + jeton avant tout traitement. Frontière de menace = le compte utilisateur.
-- Transport WebSocket, pas `fetch`. Local Network Access filtre désormais les WebSockets des sites (Chrome 147, Firefox 154), pas encore ceux des extensions, sans garantie. Remède si ça change : Native Messaging.
-- Jeton de pairage en `chrome.storage.session`, jamais `local` (non chiffré sur disque).
-- Contenu de page = donnée, jamais instruction. Texte assaini, jamais de HTML, jamais d'`innerHTML`.
-- Pas de `<all_urls>` : `activeTab` + permissions d'hôte optionnelles.
-- **La règle du geste** : Wingpen accompagne un geste, il n'en fabrique jamais. Une seule exception, nommée et bornée : ouvrir la transcription YouTube en réponse au clic « Résumer cette vidéo ». Ne sert pas de précédent.
-- **Ne jamais écrire dans le produit qu'on estime quelque chose illégal.** Un aveu livré au client ne protège de rien et fournit la preuve du savoir. Le cadre juridique s'énonce une fois, en termes neutres, dans les CGU et la fiche de boutique ; les messages d'interface restent factuels.
-- Le risque réel n'est pas le procès mais le **retrait du Chrome Web Store** : administratif, sans recours, immédiat. On optimise pour l'examinateur, pas pour le tribunal.
-- Le SDK Claude Agent ne va jamais dans le binaire distribué (109 Mo + CLI) — `cli.ts` en `await import`.
-- Recettes par site : déclaratives, ancrées sur le **texte visible** et non les classes CSS, signées Ed25519, servies par CDN. Jamais de code distant (MV3 = retrait automatique). Une recette qui échoue **dégrade**, elle ne casse pas : le modèle relit une tranche plus large.
+## Invariants
+- Aucun identifiant de modèle dans l'extension : tout secret vit dans le broker. Broker sur `127.0.0.1:8787` (port figé) : `Host` + UID du pair (`/proc/net/tcp`), puis `Origin` + jeton. Frontière de menace = le compte utilisateur.
+- Transport WebSocket. Jeton de session en mémoire du broker, renouvelé en silence pour une origine connue ; côté extension en `chrome.storage.session`, jamais `local`.
+- Trou connu : une extension tierce munie d'une permission d'hôte sur `127.0.0.1` forge l'`Origin` et obtient l'appairage (prouvé sur Brave et Firefox). Seul Native Messaging le ferme.
+- ID d'extension épinglé `hehlgipomfminodhahcjbencblepjhah` (clé `extension-key.pem`, gitignorée) : sans lui, déplacer le dossier casse l'appairage en silence. Firefox : secret collé une fois par profil depuis `/pair`, puis uuid épinglé.
+- Contenu de page = donnée : `innerText` assaini, jamais de HTML ni d'`innerHTML`. Pas de `<all_urls>` : `activeTab` + permissions d'hôte optionnelles.
+- Règle du geste. Une seule exception, nommée et bornée : ouvrir la transcription YouTube au clic « Résumer cette vidéo ». Pas un précédent.
+- Recettes par site : déclaratives, ancrées sur le texte visible, signées Ed25519, jamais de code distant (MV3 = retrait). Une recette qui échoue dégrade vers la lecture générique.
+- Le SDK Claude Agent n'entre jamais dans le binaire distribué (`cli.ts` en `await import`).
+- Ne jamais écrire dans le produit qu'on estime quelque chose illégal : le cadre juridique se dit une fois, en termes neutres, dans les CGU. On optimise pour l'examinateur du Chrome Web Store (retrait administratif, immédiat, sans recours) plutôt que pour un tribunal.
 
-## Méthode de travail (figée le 19/09)
-- **Le visuel se modélise à la main avant d'être codé.** Maquette Penpot/Figma faite par Romain, puis transmise à Claude qui la reproduit. Faire inventer un dessin détaillé à l'IA coûte cher et rend mal (quinze planches de logo l'ont prouvé).
-- **Graphiques : Plotly.js.** Jamais de SVG dessiné à la main par le modèle.
-- Dialogue admin ↔ Romain : dans le chat, jamais par le panneau APPROVALS. **Bref et clair** : chaque ligne lue fatigue, ne donner que ce qui sert à décider ou agir. Ambiguïtés levées d'un bloc par un grill (`workflow-grill-me` : questions groupées par message, chacune avec une recommandation), puis le but se déroule d'un bout à l'autre sans checkpoint. Ne demander que les vrais choix (préférence, coût, architecture, irréversible) : une recommandation saine et réversible s'applique, annoncée en une ligne. Travail dense → plan écrit + ligne `/goal` prête à lancer.
+## Économie
+- Perso : abonnement Max via le CLI local, jamais revendu (CGU Anthropic). Distribué : BYOK, jamais de relais d'inférence. Code AGPL-3.0 public, seul le corpus de recettes est privé.
+- Gratuit = acquisition, premium vertical pro = revenu, pas de tarif à vie. Un seul serveur, les licences, qui échoue en laissant passer. Encaissement par marchand de référence (Paddle / Lemon Squeezy), jamais Stripe nu.
 
-## Contraintes économiques figées
-- Usage perso : abonnement Claude Max via le CLI local. **Interdit de le revendre** (CGU Anthropic).
-- Distribué : **BYOK**, jamais de relais d'inférence. C'est l'argument de vente, pas une contrainte subie.
-- Dépôt public AGPL-3.0 ; seul le corpus de recettes est privé. Ce qu'on vend : la fraîcheur des recettes, la commodité, le support — jamais le code.
-- Gratuit grand public = acquisition. Premium vertical pro = revenu. Pas de tarif à vie.
-- Aucun serveur sauf les licences, et il échoue en laissant passer.
-- Encaissement par marchand de référence (Paddle/Lemon Squeezy), jamais Stripe nu — TVA UE.
+## Méthode et identité
+- Le visuel se dessine à la main par Romain (Penpot ou Figma), puis Claude le reproduit. Graphiques : Plotly.js, jamais de SVG dessiné par le modèle.
+- Grill : ne demander que les vrais choix (préférence, coût, architecture, irréversible) ; une recommandation saine et réversible s'applique, annoncée en une ligne. Travail dense : plan écrit + ligne `/goal` prête à lancer.
+- Nom : **Coati** (le code dit encore Wingpen). Le champ « side » est saturé, n'y pas revenir. Palette chaude à une teinte, variante sombre obligatoire (`docs/design/palette.md`).
 
-## Appairage (révisé le 25/09, `docs/etudes/appairage.md`)
-- **Identifiant d'extension épinglé** : `hehlgipomfminodhahcjbencblepjhah`, clé dans `extension-key.pem` (gitignoré). Sans épinglage Chrome dérive l'ID du chemin et déplacer le dossier casse le pairage en silence.
-- Chromium : appairage silencieux → **jeton de session** frais, en mémoire du broker, perdu à son redémarrage ; l'extension l'efface et retente une seule fois sans secret. Le chemin « un clic » (`externally_connectable`) est **retiré** : un ID inconnu est refusé à l'`Origin` → l'ajouter à `allowedExtensionIds` et redémarrer.
-- Firefox : le secret permanent se colle une fois depuis `/pair` (une fois par profil, même en extension temporaire : uuid stable, prouvé le 25/09), puis l'uuid est épinglé dans `firefox-extension-uuids.txt` (liste, relue à chaud) et les reconnexions sont silencieuses.
-- `/pair` : Firefox seulement, servie à une navigation de premier niveau seulement (`Sec-Fetch-*`). Port 8787 figé pour l'extension.
-- Risque résiduel assumé : une autre extension Chrome peut forger l'`Origin` via DNR depuis une page (C2) ; seul Native Messaging le ferme. L'étude recommande A (WebSocket durci) pour l'usage perso, B (Native Messaging + relais vers le démon) pour la version distribuée.
-
-## Gotchas mesurés
-- **Le CLI Claude annonce l'expiration de session sur `stdout`, pas `stderr`** — or le SDK ne nous transmet que `stderr`. Toute détection basée sur le seul `stderr` classe la panne en « modèle injoignable » et envoie l'utilisateur chercher un bug qui n'existe pas. D'où la sonde de confirmation `claude-cli.ts:probeAuthFailure`.
-- **Login Claude et bulle Pyramid** : depuis le 24/09, `claude-iso/.credentials.json` (`~/.local/share/pyramid/instances/<id>/`) est un lien symbolique vers `~/.claude/.credentials.json`, que lit le broker systemd. Avant, un `claude /login` fait dans Pyramid restait invisible du broker (trois reconnexions pour rien le 21/09). Reconnexion sans effet → vérifier que le fichier de la bulle est toujours un lien (`stat -c %N`).
-- **Un `pkill` sort avec le code 0** : `Restart=on-failure` ne relève donc jamais le broker. `Restart=always` + `loginctl enable-linger`. Et l'unité *installée* dérive de celle du dépôt — le broker le détecte au démarrage depuis le 21/09.
-- **Avant de conclure à une régression, comparer l'empreinte** affichée en bas du panneau à `bash scripts/stamp.sh`. Elles diffèrent = le navigateur tourne sur du code périmé. Deux heures perdues sur ce motif le 20 et le 21/09.
-- Éprouver toute la chaîne sans navigateur : `bun scripts/probe-summarize.ts`.
-- **Workers Pyramid : bac à sable sans `AF_UNIX` ni réseau de l'hôte.** Brave n'y démarre pas, le vrai broker y est injoignable, `dangerouslyDisableSandbox` est ignoré. Tout essai avec un vrai navigateur Chromium ou le vrai broker se lance depuis le shell admin. Le rôle `security` ne peut pas écrire de fichiers.
-- Brave ignore `<user-data-dir>/NativeMessagingHosts/` sous `--user-data-dir` personnalisé : seul `~/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts/` compte (mesuré le 25/09).
-- Le SDK embarque un CLI Claude cassé (`EEXIST /todos`) : `model.ts:resolveClaudeExecutable` pointe sur le `claude` système, surchargeable par `WINGPEN_CLAUDE_PATH`.
-- `chrome.sidePanel` : un panneau par fenêtre, `open()` exige un **vrai** clic (aucun geste simulé n'est accepté, même via CDP), et le panneau ne maintient pas le service worker en vie.
-- Extraction : toujours `innerText`, jamais `textContent` — ce dernier n'insère rien entre les blocs et colle les mots sur tout HTML généré sans espaces (React, Medium).
-- Transcription YouTube : interroger **les deux** sélecteurs, le déploiement oscille. Le 18/09 seul `transcript-segment-view-model` rendait ; le 20/09 seul `ytd-transcript-segment-renderer` (576 segments). Ne jamais n'en garder qu'un.
-- **La transcription YouTube ne se remplit jamais en headless** : le panneau s'ouvre (`engagement-panel-searchable-transcript` EXPANDED) mais reste un squelette vide. Tout essai de ce chemin doit être fenêtré, sinon on conclut à tort à une régression de sélecteur.
-- **Chromium expose un global `browser` distinct de `chrome`** (mesuré dans Brave). Le shim naïf `globalThis.browser ?? chrome` bascule donc Chromium sur un objet jamais éprouvé, en silence. Détecter Gecko positivement : `browser.runtime.getBrowserInfo` n'existe que chez Firefox (`extension/lib/browser-compat.js`).
-- Tester l'extension sans clic humain : `WINGPEN_DEV=1 ./scripts/smoke.sh` (copie à permissions) puis `bun scripts/extract-probe.js <url> 9333`.
-- Icônes d'extension : **PNG obligatoire**, Chrome ne rend pas le SVG déclaré au manifest (Firefox, si). Dessiner l'icône 16 px à part, jamais réduire la grande marque. À 16 px l'antialiasing **aide** — le pixel dur rend les formes illisibles (essayé, rejeté).
-- Traitement d'image : redimensionner **en alpha prémultiplié** (PIL ne le fait pas → liseré sur fond sombre). Un fond uni se détoure en propageant la couleur des pixels sûrs vers les bords, pas en divisant par l'alpha (ça clippe en noir). `wingpenEtudeLogo2.png` a un canal alpha : `convert("RGB")` le compose sur du noir.
-- **Nom : Coati** (retenu le 25/09, remplace Wingpen, jugé lourd et mal adapté au grand public). Mascotte : le coati. Six tours de recherche consignés dans `docs/design/noms.md`. Restent : recherche de marques à la main (TMview, INPI, classes 9 et 42), réservation de `getcoati.com`, renommage dans le code. Le champ « side » est saturé (Sider, Aside, Sidekick, BSide) : ne pas y revenir.
-
-## Identité visuelle (révisée le 25/09)
-- **Coati remplace l'identité B3** (plume et ailes, dégradé bleu → magenta), abandonnée avec le nom ; ses sources restent dans `docs/logo/`. Nouvelle direction : une seule teinte chaude pour toute la barre latérale (beige, roux, brun), variante sombre obligatoire. Point de départ chiffré, contrastes WCAG vérifiés : `docs/design/palette.md`. La maquette reste à dessiner par Romain.
-- Règles d'icône toujours valables : l'icône 16 px est un dessin à part, pas la marque réduite. Bascule claire / sombre pas encore câblée : sous Firefox, clé `theme_icons` (attention, `"dark"` y désigne l'icône pour barre **claire**) ; sous Chrome et Brave, rien de déclaratif, il faut un *offscreen document* qui lit `matchMedia` et fait appeler `chrome.action.setIcon()`.
+## Pièges qui mordent à chaque session (liste complète : `docs/PIEGES.md`)
+- Régression suspecte : comparer d'abord l'empreinte en bas du panneau à `bash scripts/stamp.sh`.
+- Une extraction se valide sur une vraie page (`scripts/corpus-probe.ts`), jamais sur le faux DOM seul.
+- Modèle muet : `bun scripts/probe-summarize.ts`. Session expirée : `claude /login` dans kitty, pas dans Pyramid (le broker lit `~/.claude`, en lecture seule pour lui).
+- Workers Pyramid : ni `AF_UNIX` ni réseau de l'hôte. Navigateur réel et vrai broker se pilotent depuis le shell admin.

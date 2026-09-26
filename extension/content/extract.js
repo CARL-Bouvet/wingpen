@@ -120,12 +120,12 @@
     return undefined;
   }
 
-  // Reads the transcript only if the user has already opened the transcript
-  // panel. We never click it open ourselves, and we never call YouTube's
-  // internal endpoints: automated access is forbidden by YouTube's terms
-  // (section 5.B), and fabricating the gesture would break the rule that
-  // Wingpen accompanies a gesture and never manufactures one
-  // (DECISIONS.md, "la règle du geste").
+  // Reads the transcript only if it is already open in the DOM: either the
+  // user opened the transcript panel themselves, or the panel's own "Résumer
+  // cette vidéo" button did it on their behalf, in direct response to their
+  // click — the one documented exception to the gesture rule (DECISIONS.md,
+  // "Contrainte dure — la règle du geste"). Either way this function itself
+  // never opens the panel and never calls YouTube's internal endpoints.
   function getYouTubeTranscript() {
     // YouTube migrated its transcript to the "view model" architecture; the
     // older custom element is kept as a fallback for slower rollouts.
@@ -666,6 +666,28 @@
   // nor anything explicitly marked non-visible for assistive tech.
   const FACT_HIDDEN_ANCESTOR_SELECTOR = 'form, select, option, datalist, [hidden], [aria-hidden="true"]';
 
+  // A fact/entry label or value cell that IS or CONTAINS an editable region
+  // (a draft comment typed into a <div contenteditable> nested in a table
+  // cell, a <dd>, one half of an adjacent pair…) must never be read: the
+  // guard in isFactsExcludedContext() only catches the container living
+  // INSIDE an editable ancestor, not an editable descendant living inside an
+  // otherwise ordinary label/value cell. Same promise as textExcludingEditable
+  // above, applied to the smaller, per-cell granularity facts/items read at.
+  function isOrContainsEditable(el) {
+    if (!el) return false;
+    try {
+      if (typeof el.getAttribute === "function" && el.getAttribute("contenteditable") != null) return true;
+    } catch {
+      // fall through
+    }
+    try {
+      if (typeof el.querySelector === "function" && el.querySelector("[contenteditable]")) return true;
+    } catch {
+      // not a real element / no querySelector — can't contain one.
+    }
+    return false;
+  }
+
   // Step 3b — "Faits" (docs/PROTOCOL.md "Faits — context.facts"), the four
   // recognized shapes, read within `scopeEl` and excluding `excludedEls` and
   // any element in `excludedListEntries` (candidate list entries: facts never
@@ -725,13 +747,15 @@
         const label = normalizeFieldText(visibleText(node));
         const values = [];
         let isMenu = false;
+        let isEditable = isOrContainsEditable(node);
         let j = i + 1;
         while (j < children.length && children[j].tagName === "DD") {
           if (valueLooksLikeMenu(children[j])) isMenu = true;
+          if (isOrContainsEditable(children[j])) isEditable = true;
           values.push(normalizeFieldText(visibleText(children[j])));
           j += 1;
         }
-        if (values.length && !isMenu) out.push({ label, value: values.join(", ") });
+        if (values.length && !isMenu && !isEditable) out.push({ label, value: values.join(", ") });
         i = j > i ? j : i + 1;
       }
     }
@@ -748,6 +772,7 @@
       if (isFactsExcludedContext(tr, excludedEls, excludedListEntries)) continue;
       const cells = Array.from(tr.children || []).filter((c) => c.tagName === "TH" || c.tagName === "TD");
       if (cells.length !== 2) continue;
+      if (isOrContainsEditable(cells[0]) || isOrContainsEditable(cells[1])) continue;
       const label = normalizeFieldText(visibleText(cells[0]));
       const value = normalizeFieldText(visibleText(cells[1]));
       out.push({ label, value });
@@ -777,6 +802,7 @@
         if (isFactsExcludedContext(el, excludedEls, excludedListEntries)) continue;
         const [labelEl, valueEl] = Array.from(el.children).filter((c) => visibleText(c).trim().length > 0);
         if (valueLooksLikeMenu(valueEl)) continue; // same guard as the dl shape
+        if (isOrContainsEditable(labelEl) || isOrContainsEditable(valueEl)) continue;
         const label = normalizeFieldText(visibleText(labelEl));
         const value = normalizeFieldText(visibleText(valueEl));
         out.push({ label, value });
@@ -797,6 +823,7 @@
     for (const el of elements) {
       if ((el.children || []).length > 0) continue; // "sans enfant de bloc" (approximation)
       if (isFactsExcludedContext(el, excludedEls, excludedListEntries)) continue;
+      if (isOrContainsEditable(el)) continue;
       const raw = visibleText(el).trim();
       if (!raw || raw.includes("\n")) continue; // "l'élément a d'autres lignes"
       const match = LABEL_VALUE_LINE_RE.exec(raw);
@@ -860,12 +887,12 @@
   function titleForEntry(entry, fallbackText) {
     try {
       const heading = entry.querySelector && entry.querySelector("h2, h3, h4");
-      if (heading) {
+      if (heading && !isOrContainsEditable(heading)) {
         const t = normalizeFieldText(visibleText(heading));
         if (t) return t;
       }
       const link = entry.querySelector && entry.querySelector("a");
-      if (link) {
+      if (link && !isOrContainsEditable(link)) {
         const t = normalizeFieldText(visibleText(link));
         if (t) return t;
       }

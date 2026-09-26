@@ -7,12 +7,10 @@
 //      cache cleared on settings.set, no automatic provider switch.
 
 import { describe, expect, test, afterEach } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { ProviderStatusCache } from "../src/provider-status.ts";
 import { startServer } from "../src/server.ts";
 import { claudeApiProvider } from "../src/providers/claude-api.ts";
+import { makeTmpDir } from "./helpers/tmp-dir.ts";
 import {
   claudeCliProvider,
   __setExecFileImplForTests,
@@ -302,8 +300,8 @@ describe("server.ts — provider.status wiring", () => {
   });
 
   function boot(overrides: Partial<Parameters<typeof startServer>[0]> = {}) {
-    const dataDir = mkdtempSync(join(tmpdir(), "wingpen-provider-status-"));
-    const configDir = mkdtempSync(join(tmpdir(), "wingpen-provider-status-cfg-"));
+    const dataDir = makeTmpDir("wingpen-provider-status-");
+    const configDir = makeTmpDir("wingpen-provider-status-cfg-");
     const server = startServer(
       { port: 0, allowedExtensionIds: [ALLOWED_ID], provider: "ollama", ollamaUrl: "http://x", ...overrides },
       SECRET,

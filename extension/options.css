@@ -82,6 +82,7 @@ select {
 .provider-reason {
   font-size: 12px;
   color: #d5495a;
+  white-space: pre-line;
 }
 
 .provider-description {
@@ -122,6 +123,13 @@ select {
 
 .apikey-clear:hover {
   background: #fdeeee;
+}
+
+.apikey-clear--confirm {
+  background: #a33;
+  color: #fff;
+  border-color: #a33;
+  font-weight: 600;
 }
 
 .test-row {

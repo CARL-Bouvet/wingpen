@@ -4,11 +4,9 @@
 // close(4401) — see ARCHITECTURE.md §7 "codes d'erreur morts".
 
 import { describe, expect, test, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { startServer } from "../src/server.ts";
 import type { ServerMessage } from "../src/protocol.ts";
+import { makeTmpDir } from "./helpers/tmp-dir.ts";
 
 const ALLOWED_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SECRET = "0123456789abcdef0123456789abcdef";
@@ -16,7 +14,7 @@ const SECRET = "0123456789abcdef0123456789abcdef";
 let servers: ReturnType<typeof startServer>[] = [];
 
 function boot() {
-  const dataDir = mkdtempSync(join(tmpdir(), "wingpen-errors-"));
+  const dataDir = makeTmpDir("wingpen-errors-");
   const server = startServer(
     { port: 0, allowedExtensionIds: [ALLOWED_ID] },
     SECRET,
@@ -56,10 +54,13 @@ describe("unauthorized error emission on bad handshake", () => {
     expect(messages[0]).toMatchObject({ type: "error", code: "unauthorized" });
   });
 
+  // A known chrome-extension origin with a wrong secret now gets a fresh
+  // token (amendement 2026-09-25 quater); the secret only matters for an
+  // origin that is not trusted yet — a provisional Firefox uuid.
   test("wrong pairing secret: emits error(unauthorized) then closes 4401", async () => {
     const { server } = boot();
     const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`, {
-      headers: { Origin: `chrome-extension://${ALLOWED_ID}` },
+      headers: { Origin: `moz-extension://00000000-0000-4000-8000-000000000000` },
     } as any);
     const donePromise = collectUntilClose(ws);
     await new Promise<void>((resolve) => ws.addEventListener("open", () => resolve()));

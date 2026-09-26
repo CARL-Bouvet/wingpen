@@ -15,6 +15,7 @@ import {
 } from "../src/model.ts";
 import {
   looksLikeAuthFailure,
+  sanitizeCliReason,
   __setExecFileImplForTests,
   __resetExecFileImplForTests,
 } from "../src/providers/claude-cli.ts";
@@ -484,6 +485,89 @@ describe("streamAnswer — cancel never triggers the auth probe (M1)", () => {
     })();
 
     expect(isAuthRequiredError(err)).toBe(false);
+  });
+
+  // 2026-09-26 amendment: real capture (empty CLAUDE_CONFIG_DIR, no
+  // ANTHROPIC_API_KEY/CLAUDE_CODE_OAUTH_TOKEN, no network) proved the CLI's
+  // own reason arrives as a `result` message — `is_error: true`, `result:
+  // "Not logged in · Please run /login"` — one message BEFORE the SDK's
+  // generic "process exited with code 1" throw. See
+  // providers/claude-cli.ts's cliReasonText for the full account.
+  test("the CLI's own 'result' message (is_error, verbatim text) is enough to classify auth-required — no probe needed", async () => {
+    let probed = false;
+    __setExecFileImplForTests((() => {
+      probed = true;
+      throw new Error("the probe must never run: looksLikeAuthFailure already matched the captured reason");
+    }) as any);
+    __setQueryImplForTests((() => {
+      return (async function* () {
+        yield { type: "result", is_error: true, result: "Not logged in · Please run /login" } as any;
+        throw new Error("Claude Code process exited with code 1");
+      })();
+    }) as any);
+
+    const built = buildPrompt({ kind: "chat", text: "hello" });
+    const err = await (async () => {
+      try {
+        for await (const _event of streamAnswer(built, { timeoutMs: 5000 })) {
+          // draining
+        }
+      } catch (e) {
+        return e;
+      }
+    })();
+
+    expect(isAuthRequiredError(err)).toBe(true);
+    expect(probed).toBe(false);
+  });
+
+  // Non-auth CLI failure: the captured reason is appended to the error
+  // message (never replaces it — isModelUnavailableError's "process exited"
+  // substring match must keep working), and reaches the caller verbatim
+  // enough to diagnose without a probe's extra billed call.
+  test("a non-auth 'result' reason is appended to the model-unavailable error's message", async () => {
+    __setExecFileImplForTests(((_file: string, args: string[], _opts: unknown, cb: (...a: any[]) => void) => {
+      if (args[0] === "auth") cb(null, JSON.stringify({ loggedIn: true }), "");
+      else cb(null, "pong", "");
+    }) as any);
+    __setQueryImplForTests((() => {
+      return (async function* () {
+        yield { type: "result", is_error: true, result: "Something else broke entirely" } as any;
+        throw new Error("Claude Code process exited with code 1");
+      })();
+    }) as any);
+
+    const built = buildPrompt({ kind: "chat", text: "hello" });
+    const err = await (async () => {
+      try {
+        for await (const _event of streamAnswer(built, { timeoutMs: 5000 })) {
+          // draining
+        }
+      } catch (e) {
+        return e;
+      }
+    })();
+
+    expect(isAuthRequiredError(err)).toBe(false);
+    expect(isModelUnavailableError(err)).toBe(true);
+    expect((err as Error).message).toContain("process exited with code 1");
+    expect((err as Error).message).toContain("Something else broke entirely");
+  });
+});
+
+describe("sanitizeCliReason (pure)", () => {
+  test("strips control characters and collapses whitespace", () => {
+    expect(sanitizeCliReason("line one\nline\ttwo\x1b[31mred")).toBe("line one line two [31mred");
+  });
+
+  test("caps length at 300 characters", () => {
+    const long = "x".repeat(500);
+    expect(sanitizeCliReason(long).length).toBe(300);
+  });
+
+  test("empty or whitespace-only input yields an empty string", () => {
+    expect(sanitizeCliReason("")).toBe("");
+    expect(sanitizeCliReason("   \n\t  ")).toBe("");
   });
 });
 

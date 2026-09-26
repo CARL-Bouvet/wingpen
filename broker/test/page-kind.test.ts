@@ -13,6 +13,7 @@ import { parseClientMessage } from "../src/protocol.ts";
 import type { Context, Fact, Item } from "../src/protocol.ts";
 import { contextBudgetError } from "../src/server.ts";
 import { buildPrompt } from "../src/model.ts";
+import { makeTmpDir } from "./helpers/tmp-dir.ts";
 
 // Pulls the two fence markers + nonce out of a built prompt — same helper
 // shape as model.test.ts's fenceIndices, duplicated here to keep this file
@@ -265,10 +266,6 @@ describe("contextBudgetError (item 2)", () => {
   test("a full end-to-end summarize over budget gets context-too-large without a model call", async () => {
     const { startServer } = await import("../src/server.ts");
     const { __setQueryImplForTests, __resetQueryImplForTests } = await import("../src/model.ts");
-    const { mkdtempSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
-
     const ALLOWED_ID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const SECRET = "1111111111111111111111111111111111";
     let queryCalled = false;
@@ -279,7 +276,7 @@ describe("contextBudgetError (item 2)", () => {
       })();
     }) as any);
 
-    const dataDir = mkdtempSync(join(tmpdir(), "wingpen-pagekind-"));
+    const dataDir = makeTmpDir("wingpen-pagekind-");
     const server = startServer({ port: 0, allowedExtensionIds: [ALLOWED_ID] }, SECRET, { dataDir });
     try {
       const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`, {
@@ -659,10 +656,6 @@ describe("over-cap contexts are refused, never truncated (item 5)", () => {
   test("41 items via a full summarize round-trip gets context-too-large, no model call", async () => {
     const { startServer } = await import("../src/server.ts");
     const { __setQueryImplForTests, __resetQueryImplForTests } = await import("../src/model.ts");
-    const { mkdtempSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
-
     const ALLOWED_ID = "cccccccccccccccccccccccccccccccc".slice(0, 32);
     const SECRET = "2222222222222222222222222222222222";
     let queryCalled = false;
@@ -673,7 +666,7 @@ describe("over-cap contexts are refused, never truncated (item 5)", () => {
       })();
     }) as any);
 
-    const dataDir = mkdtempSync(join(tmpdir(), "wingpen-pagekind-items-"));
+    const dataDir = makeTmpDir("wingpen-pagekind-items-");
     const server = startServer({ port: 0, allowedExtensionIds: [ALLOWED_ID] }, SECRET, { dataDir });
     try {
       const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`, {
@@ -779,10 +772,6 @@ describe("nothing page-controlled reaches the logs, even with facts/items (item 
   test("received/completed log lines carry pageKind and counts, never fact/item content", async () => {
     const { startServer } = await import("../src/server.ts");
     const { __setQueryImplForTests, __resetQueryImplForTests } = await import("../src/model.ts");
-    const { mkdtempSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
-
     const ALLOWED_ID = "dddddddddddddddddddddddddddddddd";
     const SECRET = "3333333333333333333333333333333333";
     const SECRET_FACT_VALUE = "s3cr3t-listing-fact-should-never-leak";
@@ -797,7 +786,7 @@ describe("nothing page-controlled reaches the logs, even with facts/items (item 
       })();
     }) as any);
 
-    const dataDir = mkdtempSync(join(tmpdir(), "wingpen-pagekind-logs-"));
+    const dataDir = makeTmpDir("wingpen-pagekind-logs-");
     const server = startServer({ port: 0, allowedExtensionIds: [ALLOWED_ID] }, SECRET, { dataDir });
     const originalLog = console.log;
     const logSpy = mock(() => {});

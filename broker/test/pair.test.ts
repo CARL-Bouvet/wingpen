@@ -6,11 +6,9 @@
 // address stays 127.0.0.1 (CLAUDE.md non-negotiable rule #2).
 
 import { describe, expect, test, afterEach } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { startServer } from "../src/server.ts";
 import { renderPairPage } from "../src/pair.ts";
+import { makeTmpDir } from "./helpers/tmp-dir.ts";
 
 const ALLOWED_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SECRET = "0123456789abcdef0123456789abcdef";
@@ -25,7 +23,7 @@ const NAVIGATE_HEADERS = { "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "docu
 let servers: ReturnType<typeof startServer>[] = [];
 
 function boot(allowedExtensionIds: string[] = [ALLOWED_ID]) {
-  const dataDir = mkdtempSync(join(tmpdir(), "wingpen-pair-"));
+  const dataDir = makeTmpDir("wingpen-pair-");
   const server = startServer({ port: 0, allowedExtensionIds }, SECRET, { dataDir });
   servers.push(server);
   return server;
@@ -59,7 +57,7 @@ describe("GET /pair", () => {
   });
 
   test("lists pinned Firefox uuids read-only, with pinnedAt/lastSeen and the pins file path", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "wingpen-pair-"));
+    const dataDir = makeTmpDir("wingpen-pair-");
     const server = startServer({ port: 0, allowedExtensionIds: [ALLOWED_ID] }, SECRET, { dataDir });
     servers.push(server);
 

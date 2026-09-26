@@ -143,8 +143,18 @@ export function logRequestReceived(
   );
 }
 
-export function logRequestCompleted(id: string, outcome: string, elapsedMs: number): void {
-  console.log(`wingpen-broker: request completed id=${sanitizeLogValue(id)} outcome=${outcome} elapsedMs=${elapsedMs}`);
+// `reason` (2026-09-26 amendment, docs/PROTOCOL.md): the technical detail
+// behind an error outcome — the CLI's own words when claude-cli captured
+// them (see providers/claude-cli.ts's cliReasonText), else whatever the
+// thrown Error's message says. Optional and omitted for non-error outcomes
+// (ok/cancelled) — there is nothing to explain. Goes through the same
+// sanitizeLogValue() as every other client- or provider-sourced value logged
+// here: control chars stripped, cut to 200 chars, never raw.
+export function logRequestCompleted(id: string, outcome: string, elapsedMs: number, reason?: string): void {
+  const reasonPart = reason ? ` reason="${sanitizeLogValue(reason)}"` : "";
+  console.log(
+    `wingpen-broker: request completed id=${sanitizeLogValue(id)} outcome=${outcome} elapsedMs=${elapsedMs}${reasonPart}`,
+  );
 }
 
 // --- A1: systemd unit drift detection -------------------------------------
@@ -366,7 +376,7 @@ async function runStream(
       const code = isAuthRequiredError(err) ? "auth-required" : isModelUnavailableError(err) ? "model-unavailable" : "internal";
       send(ws, { type: "error", id, code, message });
       const outcome = err instanceof ModelTimeoutError ? "timeout" : `error:${code}`;
-      logRequestCompleted(id, outcome, Date.now() - startedAt);
+      logRequestCompleted(id, outcome, Date.now() - startedAt, message);
     }
   } finally {
     active.delete(id);
@@ -732,7 +742,7 @@ function handleHandshakeMessage(
    * leave the socket authed=false with its helloTimer already cleared
    * (see the top of this function), so it would never time out either;
    * now it fails the handshake explicitly instead. */
-  function grant(via: "silent" | "secret" | "session", token: string): void {
+  function grant(via: "silent" | "silent-renew" | "secret" | "session", token: string): void {
     try {
       if (firefoxUuid) {
         const nowIso = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -798,6 +808,13 @@ function handleHandshakeMessage(
       grant("session", secret); // same token echoed back, no rotation
       return;
     }
+    // Stale or foreign token from an origin that would get a silent grant
+    // anyway: a broker restart invalidates every session token, and refusing
+    // here left the client to a retry dance that, when it misfired, made the
+    // user paste the secret again (Romain, 2026-09-25). Same exposure as a
+    // hello without secret from this origin: grant a fresh token.
+    grant("silent-renew", sessionTokens.issue(origin ?? ""));
+    return;
   }
 
   rejectHandshake(ws, origin, "invalid pairing secret or session token");

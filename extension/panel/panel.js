@@ -55,6 +55,9 @@ import { classifyPageType, classifyPageTypeFromMetadata } from "../content/detec
 import { applyRetention } from "./retention.js";
 import { api, IS_GECKO } from "../lib/browser-compat.js";
 import { parseTimestamps, getYouTubeVideoIdFromUrl } from "./timestamps.js";
+import { isNearBottom } from "./scroll.js";
+import { providerLabel, describeError, EXTRACTION_TIMEOUT_LABEL } from "../lib/labels.js";
+import { withDeadline } from "../lib/deadline.js";
 
 // Must match extension/background/service-worker.js's BROKER_PORT — port is
 // fixed (docs/PROTOCOL.md "Transport"), so this can't be derived from config
@@ -130,6 +133,10 @@ const els = {
   activateSite: document.getElementById("activateSite"),
   promptSelect: document.getElementById("promptSelect"),
   savePrompt: document.getElementById("savePrompt"),
+  promptNameField: document.getElementById("promptNameField"),
+  promptNameInput: document.getElementById("promptNameInput"),
+  promptNameConfirm: document.getElementById("promptNameConfirm"),
+  promptNameCancel: document.getElementById("promptNameCancel"),
   messages: document.getElementById("messages"),
   attachPage: document.getElementById("attachPage"),
   input: document.getElementById("input"),
@@ -188,6 +195,23 @@ class NoAccessError extends Error {
   }
 }
 
+// Security review 2026-09-26, finding #2: chrome.scripting.executeScript has
+// no deadline of its own, so a hostile or pathologically heavy page could
+// leave the panel awaiting page content forever. EXTRACTION_DEADLINE_MS is
+// deliberately generous — no measurement in notes/corpus/ approaches even a
+// few seconds — so it never fires on a real page; it only bounds the
+// pathological case. This must NOT be used to cap the extraction loops
+// themselves (extract.js): that would change results on heavy real pages,
+// which is out of scope for this fix.
+const EXTRACTION_DEADLINE_MS = 20000;
+
+class ExtractionTimeoutError extends Error {
+  constructor() {
+    super(EXTRACTION_TIMEOUT_LABEL);
+    this.name = "ExtractionTimeoutError";
+  }
+}
+
 init();
 
 async function init() {
@@ -201,7 +225,13 @@ async function init() {
   els.send.addEventListener("click", sendChat);
   els.cancel.addEventListener("click", cancelActive);
   els.promptSelect.addEventListener("change", onPromptSelected);
-  els.savePrompt.addEventListener("click", saveCurrentAsPrompt);
+  els.savePrompt.addEventListener("click", openPromptNameField);
+  els.promptNameConfirm.addEventListener("click", confirmPromptName);
+  els.promptNameCancel.addEventListener("click", closePromptNameField);
+  els.promptNameInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") confirmPromptName();
+    if (event.key === "Escape") closePromptNameField();
+  });
   els.eraseConversation.addEventListener("click", onEraseClick);
   els.attachPage.addEventListener("change", () => {
     attachPagePreference = els.attachPage.checked;
@@ -406,10 +436,12 @@ function describeBrokerError(message) {
       return "Requête annulée.";
     case "context-too-large":
       return "⚠ Le contenu envoyé est trop volumineux pour le modèle.";
-    case "bad-request":
-      return `⚠ Requête invalide : ${message.message || message.code}.`;
     default:
-      return `⚠ ${message.message || message.code}`;
+      // Covers "bad-request" and any other/unknown code: a French label
+      // keyed on `code` (extension/lib/labels.js, shared with options.js),
+      // the broker's English `message` demoted to a secondary "Détail : …"
+      // line — never shown on its own (bug report gap 3).
+      return `⚠ ${describeError(message.code, message.message)}`;
   }
 }
 
@@ -442,6 +474,7 @@ function renderStatusLabel() {
     connected: "Connecté",
     connecting: "Connexion…",
     handshaking: "Connexion…",
+    "handshake-timeout": "Connexion…",
     disconnected: "Déconnecté",
     "no-token": "Pas de jeton — voir réglages",
     unknown: "…",
@@ -511,11 +544,8 @@ function maybeRequestProviderStatus() {
 // (docs/PROTOCOL.md "Disponibilité du fournisseur") — never shown as-is.
 // `state: "ok"` is shown too: the point of the check is that the user sees,
 // before any click, whether the model will answer (goal 2026-09-25, Q5).
-const PROVIDER_LABEL = {
-  "claude-cli": "Claude (abonnement)",
-  "claude-api": "Claude (clé API)",
-  "ollama": "Ollama",
-};
+// Provider display names come from lib/labels.js — the single shared table
+// with options.js (bug report gap 4: names must match everywhere).
 
 const PROVIDER_STATUS_REASON_TEXT = {
   "ready": "prêt",
@@ -531,7 +561,7 @@ const PROVIDER_STATUS_REASON_TEXT = {
 };
 
 function formatProviderStatus(message) {
-  const label = PROVIDER_LABEL[message.provider] ?? "Modèle";
+  const label = providerLabel(message.provider, "Modèle");
   const reasonText =
     PROVIDER_STATUS_REASON_TEXT[message.reason] ?? (message.state === "ok" ? "prêt" : "état inconnu");
   return `${label} : ${reasonText}`;
@@ -1093,16 +1123,21 @@ function looksLikeAccessDenied(err) {
 async function extractFromTab(tabId) {
   let results;
   try {
-    results = await api.scripting.executeScript({
-      target: { tabId },
-      // Leading slash, and it matters: Chrome resolves an injected file path
-      // against the extension root, Firefox against the calling document — the
-      // panel lives in panel/, so "content/extract.js" became
-      // moz-extension://…/panel/content/extract.js and failed to load.
-      // Measured in Firefox on 2026-09-20. Root-relative works on both.
-      files: ["/content/extract.js"],
-    });
+    results = await withDeadline(
+      api.scripting.executeScript({
+        target: { tabId },
+        // Leading slash, and it matters: Chrome resolves an injected file path
+        // against the extension root, Firefox against the calling document — the
+        // panel lives in panel/, so "content/extract.js" became
+        // moz-extension://…/panel/content/extract.js and failed to load.
+        // Measured in Firefox on 2026-09-20. Root-relative works on both.
+        files: ["/content/extract.js"],
+      }),
+      EXTRACTION_DEADLINE_MS,
+      () => new ExtractionTimeoutError(),
+    );
   } catch (err) {
+    if (err instanceof ExtractionTimeoutError) throw err;
     const origin = extractOriginFromError(err);
     if (origin) throw new NoAccessError(origin);
     throw err;
@@ -1227,17 +1262,38 @@ function onPromptSelected() {
   els.promptSelect.value = "";
 }
 
-function saveCurrentAsPrompt() {
+// window.prompt() replaced with this inline field: native dialogs are
+// unreliable in extension surfaces generally (see the window.confirm()
+// comment above eraseConversation) and specifically unsupported/unproven in
+// a side panel (bug report gap 5). Styling is deliberately minimal here —
+// reuses existing classes (.prompt-select, .icon-button) — pending the
+// Coati mockup's own pass on this UI.
+function openPromptNameField() {
   const body = els.input.value.trim();
   if (!body) return;
-  const name = window.prompt("Nom de ce prompt ?");
-  if (!name) return;
+  els.promptNameField.hidden = false;
+  els.savePrompt.hidden = true;
+  els.promptNameInput.value = "";
+  els.promptNameInput.focus();
+}
+
+function closePromptNameField() {
+  els.promptNameField.hidden = true;
+  els.savePrompt.hidden = false;
+  els.promptNameInput.value = "";
+}
+
+function confirmPromptName() {
+  const body = els.input.value.trim();
+  const name = els.promptNameInput.value.trim();
+  if (!body || !name) return;
 
   api.runtime.sendMessage({
     type: "wingpen:client-message",
     payload: { type: "prompts.save", id: newId(), prompt: { name, body } },
   });
   requestPrompts();
+  closePromptNameField();
 }
 
 // --- Rendering ----------------------------------------------------------
@@ -1256,8 +1312,17 @@ function renderAll() {
   els.messages.scrollTop = els.messages.scrollHeight;
 }
 
+function wasNearBottom() {
+  const el = els.messages;
+  return isNearBottom(el.scrollHeight, el.scrollTop, el.clientHeight);
+}
+
 function renderMessage(msg, { append = false } = {}) {
   let node = document.getElementById(`msg-${msg.id}`);
+  // Capture BEFORE mutating the DOM: appending/growing the node can itself
+  // change scrollHeight, which would make the "near bottom" check below
+  // always true if read after the fact.
+  const shouldFollow = wasNearBottom();
   if (!node) {
     if (!append) return;
     node = document.createElement("div");
@@ -1271,7 +1336,10 @@ function renderMessage(msg, { append = false } = {}) {
   // "[1:23]" has none, so its timestamps stay plain text (deliverable 4).
   if (msg.role === "assistant" && msg.videoId) linkifyTimestamps(node, msg.videoId);
   if (msg.authRequired) node.appendChild(buildAuthRecoveryBlock(msg));
-  els.messages.scrollTop = els.messages.scrollHeight;
+  // Only follow the stream to the bottom if the user was already there
+  // (or close enough) — a user scrolled up to read must not be yanked back
+  // down by every incoming chunk (bug report, symptom 2).
+  if (shouldFollow) els.messages.scrollTop = els.messages.scrollHeight;
 }
 
 /**

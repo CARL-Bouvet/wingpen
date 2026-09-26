@@ -7,11 +7,11 @@
 // disk and not just in-memory state.
 
 import { describe, expect, test, afterEach } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { startServer } from "../src/server.ts";
 import type { ServerMessage, SettingsMessage, SettingsTestResultMessage } from "../src/protocol.ts";
+import { makeTmpDir } from "./helpers/tmp-dir.ts";
 import { __setFetchImplForTests as __setClaudeApiFetch, __resetFetchImplForTests as __resetClaudeApiFetch } from "../src/providers/claude-api.ts";
 import { __setFetchImplForTests as __setOllamaFetch, __resetFetchImplForTests as __resetOllamaFetch } from "../src/providers/ollama.ts";
 import { __setQueryImplForTests as __setClaudeCliQuery, __resetQueryImplForTests as __resetClaudeCliQuery } from "../src/providers/claude-cli.ts";
@@ -22,7 +22,7 @@ const SECRET = "0123456789abcdef0123456789abcdef";
 let servers: ReturnType<typeof startServer>[] = [];
 
 function boot(configDir?: string) {
-  const dataDir = mkdtempSync(join(tmpdir(), "wingpen-settings-"));
+  const dataDir = makeTmpDir("wingpen-settings-");
   const server = startServer(
     { port: 0, allowedExtensionIds: [ALLOWED_ID] },
     SECRET,
@@ -102,7 +102,7 @@ describe("settings.set", () => {
   });
 
   test("persists provider + model and round-trips on the next settings.get", async () => {
-    const configDir = mkdtempSync(join(tmpdir(), "wingpen-settings-config-"));
+    const configDir = makeTmpDir("wingpen-settings-config-");
     const server = boot(configDir);
     const ws = await connectAndAuth(server);
 
@@ -193,7 +193,7 @@ describe("settings.set — apiKey is write-only", () => {
   });
 
   test("is persisted to config.json (0600) even though never echoed on the wire", async () => {
-    const configDir = mkdtempSync(join(tmpdir(), "wingpen-settings-apikey-"));
+    const configDir = makeTmpDir("wingpen-settings-apikey-");
     const server = boot(configDir);
     const ws = await connectAndAuth(server);
     ws.send(JSON.stringify({ type: "settings.set", id: "k4", provider: "claude-api", apiKey: "sk-ant-on-disk" }));
@@ -204,7 +204,7 @@ describe("settings.set — apiKey is write-only", () => {
   });
 
   test("an empty-string apiKey forgets the previously stored key", async () => {
-    const configDir = mkdtempSync(join(tmpdir(), "wingpen-settings-apikey-forget-"));
+    const configDir = makeTmpDir("wingpen-settings-apikey-forget-");
     const server = boot(configDir);
     const ws = await connectAndAuth(server);
     ws.send(JSON.stringify({ type: "settings.set", id: "k5", provider: "claude-api", apiKey: "sk-ant-to-forget" }));

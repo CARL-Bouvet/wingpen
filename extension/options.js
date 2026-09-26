@@ -3,7 +3,8 @@
 // The token is a secret: it MUST live in chrome.storage.session (wiped when
 // the browser closes), never chrome.storage.local (unencrypted on disk).
 
-import { api } from "./lib/browser-compat.js";
+import { api, IS_GECKO } from "./lib/browser-compat.js";
+import { providerLabel, describeProviderUnavailable } from "./lib/labels.js";
 
 const RETENTION_DAYS_KEY = "wingpen:retentionDays"; // number of days, or null for "jamais"
 const DEFAULT_RETENTION_DAYS = 30;
@@ -27,6 +28,7 @@ const els = {
   modelSelect: document.getElementById("modelSelect"),
   modelInput: document.getElementById("modelInput"),
   modelSave: document.getElementById("modelSave"),
+  siteTogglesHelp: document.getElementById("siteTogglesHelp"),
 };
 
 // One-line French descriptions, understandable by a non-developer (task
@@ -53,6 +55,13 @@ async function init() {
   // docs/PROTOCOL.md "Collage (options, Firefox)": write-only field, never
   // pre-filled with the token/secret in memory — nothing read from
   // chrome.storage.session here.
+
+  // Bug report gap 7: this help text used to say "Chrome" unconditionally,
+  // wrong under Firefox — same IS_GECKO detection panel.js already uses for
+  // its own browser-specific text (see applyConnectionBanner()).
+  els.siteTogglesHelp.textContent = IS_GECKO
+    ? "Sans cette autorisation, Firefox cache à l'extension quel site est ouvert dans l'onglet, donc le bouton principal reste générique tant que vous n'avez pas cliqué dessus."
+    : "Sans cette autorisation, Chrome cache à l'extension quel site est ouvert dans l'onglet, donc le bouton principal reste générique tant que vous n'avez pas cliqué dessus.";
 
   const data = await api.storage.local.get(RETENTION_DAYS_KEY);
   const stored = data[RETENTION_DAYS_KEY];
@@ -123,6 +132,7 @@ function applyStatus(state) {
     connected: "Connecté",
     connecting: "Connexion…",
     handshaking: "Connexion…",
+    "handshake-timeout": "Connexion…",
     disconnected: "Déconnecté",
     "no-token": "Pas de jeton",
     unknown: "…",
@@ -230,7 +240,9 @@ function renderModelSection(settings) {
     });
 
     const name = document.createElement("span");
-    name.textContent = provider.label;
+    // lib/labels.js — shared with panel.js (bug report gap 4: one provider
+    // name everywhere), not the broker's own `provider.label`.
+    name.textContent = providerLabel(provider.id, provider.label);
 
     label.appendChild(radio);
     label.appendChild(name);
@@ -249,9 +261,15 @@ function renderModelSection(settings) {
     }
 
     if (!provider.available && provider.reason) {
+      // `provider.reason` is free-text English straight from the broker
+      // (broker/src/providers/*.ts) — never shown alone. describeProviderUnavailable()
+      // gives it a French label and demotes the broker's own words to a
+      // secondary "Détail : …" line (bug report gap 3).
       const reason = document.createElement("span");
       reason.className = "provider-reason";
-      reason.textContent = `— indisponible : ${provider.reason}`;
+      // white-space: pre-line lets the \n from describeProviderUnavailable()
+      // render as a real line break — see options.css.
+      reason.textContent = `— ${describeProviderUnavailable(provider.reason)}`;
       item.appendChild(reason);
     }
 
@@ -290,11 +308,35 @@ function buildApiKeyField() {
     input.value = "";
   });
 
+  // Two-step confirm, no native dialog (options.html can be embedded by
+  // Firefox — window.confirm() is unreliable there, same reasoning as
+  // panel.js's eraseConversation button). First click arms the button for
+  // ~5s; a second click within that window actually clears. Closure state
+  // (not module-level) is fine: buildApiKeyField() is called fresh on every
+  // renderModelSection(), so a stale timer never outlives its own button.
+  const CLEAR_CONFIRM_MS = 5000;
+  let clearConfirmPending = false;
+  let clearConfirmTimer = null;
   const clearBtn = document.createElement("button");
   clearBtn.type = "button";
   clearBtn.className = "apikey-clear";
   clearBtn.textContent = "Effacer la clé";
   clearBtn.addEventListener("click", () => {
+    if (!clearConfirmPending) {
+      clearConfirmPending = true;
+      clearBtn.textContent = "Confirmer l'effacement";
+      clearBtn.classList.add("apikey-clear--confirm");
+      clearConfirmTimer = setTimeout(() => {
+        clearConfirmPending = false;
+        clearBtn.textContent = "Effacer la clé";
+        clearBtn.classList.remove("apikey-clear--confirm");
+      }, CLEAR_CONFIRM_MS);
+      return;
+    }
+    clearConfirmPending = false;
+    clearTimeout(clearConfirmTimer);
+    clearBtn.textContent = "Effacer la clé";
+    clearBtn.classList.remove("apikey-clear--confirm");
     setApiKey("");
     input.value = "";
   });

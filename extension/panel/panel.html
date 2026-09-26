@@ -30,6 +30,11 @@
       <option value="">Bibliothèque de prompts…</option>
     </select>
     <button id="savePrompt" class="icon-button" type="button" title="Enregistrer le texte saisi comme prompt">💾</button>
+    <span id="promptNameField" class="prompt-name-field" hidden>
+      <input id="promptNameInput" class="prompt-select" type="text" placeholder="Nom du prompt" />
+      <button id="promptNameConfirm" class="icon-button" type="button" title="Confirmer">✓</button>
+      <button id="promptNameCancel" class="icon-button" type="button" title="Annuler">✕</button>
+    </span>
   </section>
 
   <main id="messages" class="messages" aria-live="polite"></main>

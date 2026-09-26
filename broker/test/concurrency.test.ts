@@ -4,12 +4,10 @@
 // limit, without spawning a 4th model call.
 
 import { describe, expect, test, afterEach } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { startServer, MAX_CONCURRENT_STREAMS } from "../src/server.ts";
 import { __setQueryImplForTests, __resetQueryImplForTests } from "../src/model.ts";
 import type { ServerMessage } from "../src/protocol.ts";
+import { makeTmpDir } from "./helpers/tmp-dir.ts";
 
 const ALLOWED_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SECRET = "0123456789abcdef0123456789abcdef";
@@ -17,7 +15,7 @@ const SECRET = "0123456789abcdef0123456789abcdef";
 let servers: ReturnType<typeof startServer>[] = [];
 
 function boot() {
-  const dataDir = mkdtempSync(join(tmpdir(), "wingpen-concurrency-"));
+  const dataDir = makeTmpDir("wingpen-concurrency-");
   const server = startServer({ port: 0, allowedExtensionIds: [ALLOWED_ID] }, SECRET, { dataDir });
   servers.push(server);
   return server;

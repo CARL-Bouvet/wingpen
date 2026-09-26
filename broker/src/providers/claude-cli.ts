@@ -152,6 +152,21 @@ export function looksLikeAuthFailure(stderrText: string): boolean {
   return AUTH_REQUIRED_PATTERNS.some((re) => re.test(text)) || AUTH_KEYWORD_HINT.test(text);
 }
 
+// How much of the CLI's own words to keep in the error message/journal line
+// (2026-09-26 amendment, docs/PROTOCOL.md): enough to diagnose, short enough
+// to stay a log line rather than a dump.
+const CLI_REASON_MAX_LENGTH = 300;
+
+/** Pure: makes CLI-sourced text safe to put in an error message and a journal
+ * log line — strips control chars (a hostile/broken CLI build could emit
+ * ANSI escapes or newlines), collapses whitespace, and caps the length.
+ * Exported for tests. Returns "" for empty/whitespace-only input. */
+export function sanitizeCliReason(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  const cleaned = text.replace(/[\x00-\x1f\x7f]+/g, " ").replace(/\s+/g, " ").trim();
+  return cleaned.slice(0, CLI_REASON_MAX_LENGTH);
+}
+
 // How long the confirmation probe below may take before we give up on it and
 // let the original error through unchanged. The real CLI answers an expired
 // session in ~3s; 15s is slack, not a target.
@@ -348,6 +363,20 @@ export async function* streamAnswer(
   // process exited with code 1".
   let stderrText = "";
 
+  // The CLI's OWN account of why it failed, when it has one. Measured
+  // 2026-09-26 (empty CLAUDE_CONFIG_DIR, no ANTHROPIC_API_KEY/
+  // CLAUDE_CODE_OAUTH_TOKEN — a deterministic "not logged in" failure, no
+  // network): the CLI does NOT just exit 1 silently. Before exiting it still
+  // emits a `result` message on stdout, valid stream-json, with `is_error:
+  // true` and `result: "Not logged in · Please run /login"` — the SDK's
+  // ProcessTransport.readMessages() yields every stdout line before it
+  // eventually throws `Claude Code process exited with code 1` from
+  // waitForExit(). So the real reason is available in this for-await loop,
+  // one message before the generic exit error — we just weren't reading it.
+  // This is what probeAuthFailure() below used to need a second, billed CLI
+  // call to reconstruct.
+  let cliReasonText = "";
+
   try {
     const stream = queryImpl({
       prompt: built.prompt,
@@ -382,6 +411,14 @@ export async function* streamAnswer(
       }
 
       if (message.type === "result") {
+        // See cliReasonText's declaration above: on a failed run the CLI's
+        // final `result` message carries its own error text — capture it
+        // before it's lost when readMessages() later throws the generic
+        // "process exited with code 1".
+        const resultMsg = message as unknown as { is_error?: boolean; result?: unknown };
+        if (resultMsg.is_error && typeof resultMsg.result === "string") {
+          cliReasonText = resultMsg.result;
+        }
         // Duck-typed: the SDK forwards Anthropic's snake_case usage block, but
         // tolerate a camelCase shape too rather than silently reporting zero.
         const usage = (message as unknown as { usage?: Record<string, unknown> }).usage ?? {};
@@ -415,8 +452,20 @@ export async function* streamAnswer(
     // point any abort left is `opts.signal`'s own — a real cancel.
     if (abortController.signal.aborted) throw err;
     const errText = err instanceof Error ? err.message : String(err);
-    if (looksLikeAuthFailure(`${stderrText}\n${errText}`) || (await probeAuthFailure())) {
+    if (looksLikeAuthFailure(`${stderrText}\n${cliReasonText}\n${errText}`) || (await probeAuthFailure())) {
       throw new AuthRequiredError(AUTH_REQUIRED_MESSAGE);
+    }
+    // 2026-09-26 amendment (docs/PROTOCOL.md): surface the CLI's own words
+    // instead of the opaque "Claude Code process exited with code 1" — prefer
+    // the reason captured from its `result` message (see cliReasonText
+    // above), fall back to the stderr tail. Appending rather than replacing
+    // keeps every existing isModelUnavailableError() substring match (e.g.
+    // "process exited") intact; mutating err.message in place (rather than
+    // building a new Error) preserves `instanceof`/`err.name` for the same
+    // reason.
+    const reason = sanitizeCliReason(cliReasonText) || sanitizeCliReason(stderrText);
+    if (err instanceof Error && reason) {
+      err.message = `${errText}: ${reason}`;
     }
     throw err;
   } finally {

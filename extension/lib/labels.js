@@ -1,0 +1,73 @@
+// Shared French labels for provider names and broker error codes — the
+// single source of truth for text the panel and the options page both need
+// to keep in sync (bug report "panneau et réglages", gaps 3 and 4). Loaded
+// the same way as the other lib/*.js modules (plain ESM import, no build).
+
+// One name per provider, used everywhere (panel status suffix, options
+// provider list, error text) — never "Claude (abonnement)" in one place and
+// "Claude (CLI locale)" in another. docs/design/inventaire.md names the CLI
+// provider "Claude (abonnement)" (a Claude subscription used through the
+// local CLI, not a raw API key) — kept as the one label, per this mission's
+// default (docs/design/inventaire.md says otherwise → revisit).
+export const PROVIDER_LABELS = {
+  "claude-api": "Claude (clé API)",
+  "claude-cli": "Claude (abonnement)",
+  ollama: "Ollama (local)",
+};
+
+/** @param {string} id @param {string} [fallback] - broker-sent label, used
+ * only if this build doesn't know the id (forward compat). */
+export function providerLabel(id, fallback) {
+  return PROVIDER_LABELS[id] ?? fallback ?? id;
+}
+
+// French label per broker ErrorCode (broker/src/protocol.ts's ErrorCode).
+// This is the primary, human-facing line. The broker's `message` is English
+// technical detail (docs/PROTOCOL.md amendment 2026-09-26) and is NEVER
+// shown alone — describeError() below always appends it as a secondary
+// "Détail : …" line, never as the primary text.
+const ERROR_CODE_LABELS = {
+  "bad-request": "Requête invalide.",
+  unauthorized: "Non autorisé.",
+  "model-unavailable": "Le modèle ne répond pas.",
+  "auth-required": "La session Claude a expiré.",
+  "context-too-large": "Le contenu envoyé est trop volumineux pour le modèle.",
+  cancelled: "Requête annulée.",
+  internal: "Erreur interne du broker.",
+};
+
+/**
+ * @param {string} code - broker ErrorCode. Anything unrecognized (an
+ *   older/newer broker) falls back to a generic French label rather than
+ *   surfacing the raw code.
+ * @param {string} [message] - broker's English technical detail. Shown only
+ *   as a secondary "Détail : …" line, appended after the label — never
+ *   returned on its own.
+ * @returns {string} ready-to-display text, one or two lines (\n-joined).
+ */
+export function describeError(code, message) {
+  const label = ERROR_CODE_LABELS[code] ?? "Une erreur est survenue.";
+  return message ? `${label}\nDétail : ${message}` : label;
+}
+
+// Provider-unavailability `reason` (SettingsMessage.available[].reason,
+// broker/src/protocol.ts) is free English text, not a closed code set (it
+// can embed a path or URL — see broker/src/providers/*.ts) — there is no
+// `code` to key a label table on. So the label here is always the same
+// generic French sentence; the broker's own words become the secondary
+// "Détail : …" line, per the same never-alone rule as describeError().
+const PROVIDER_UNAVAILABLE_LABEL = "Indisponible.";
+
+// Security review 2026-09-26, finding #2: chrome.scripting.executeScript has
+// no built-in deadline, so a hostile or pathological page could leave the
+// panel waiting forever for page content. panel.js races extraction against
+// EXTRACTION_TIMEOUT_MS and surfaces this label when it loses.
+export const EXTRACTION_TIMEOUT_LABEL = "La page met trop de temps à être lue.";
+
+/**
+ * @param {string} [reason] - broker's free-text English reason, or absent.
+ * @returns {string} ready-to-display text, one or two lines (\n-joined).
+ */
+export function describeProviderUnavailable(reason) {
+  return reason ? `${PROVIDER_UNAVAILABLE_LABEL}\nDétail : ${reason}` : PROVIDER_UNAVAILABLE_LABEL;
+}

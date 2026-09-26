@@ -1,8 +1,8 @@
 import { describe, expect, test, afterEach } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { checkOrigin, checkSecret, evaluateOrigin, parseMozExtensionOrigin, startServer } from "../src/server.ts";
+import { makeTmpDir } from "./helpers/tmp-dir.ts";
 
 describe("checkOrigin", () => {
   const allowed = ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"];
@@ -138,7 +138,7 @@ describe("silent pairing — hello with no secret", () => {
   });
 
   function boot() {
-    const dataDir = mkdtempSync(join(tmpdir(), "wingpen-silent-pair-"));
+    const dataDir = makeTmpDir("wingpen-silent-pair-");
     const server = startServer({ port: 0, allowedExtensionIds: [ALLOWED_ID] }, SECRET, { dataDir });
     servers.push(server);
     return server;
@@ -199,9 +199,23 @@ describe("silent pairing — hello with no secret", () => {
     expect(result.helloOk).toBeUndefined();
   });
 
-  test("a known chrome-extension origin with a WRONG secret is still rejected — no-secret is not a bypass", async () => {
+  // Amendement 2026-09-25 (quater): a known origin could get a token with NO
+  // secret anyway, so refusing a wrong or stale one protected nothing and
+  // locked honest clients out after every broker restart. It now gets a fresh
+  // session token — never the one it presented, never the permanent secret.
+  test("a known chrome-extension origin with a stale or wrong secret gets a FRESH session token", async () => {
     const server = boot();
-    const result = await connect(server, `chrome-extension://${ALLOWED_ID}`, "wrong-secret-wrong-secret-wrong!");
+    const stale = "wrong-secret-wrong-secret-wrong!";
+    const result = await connect(server, `chrome-extension://${ALLOWED_ID}`, stale);
+    expect(result.helloOk).toBeDefined();
+    expect(result.helloOk?.token).toMatch(SESSION_TOKEN_RE);
+    expect(result.helloOk?.token).not.toBe(stale);
+    expect(result.helloOk?.token).not.toBe(SECRET);
+  });
+
+  test("an UNKNOWN origin with a wrong secret is still rejected", async () => {
+    const server = boot();
+    const result = await connect(server, `moz-extension://00000000-0000-4000-8000-000000000000`, "wrong-secret-wrong-secret-wrong!");
     expect(result.closeCode).toBe(4401);
   });
 
@@ -231,6 +245,44 @@ describe("silent pairing — hello with no secret", () => {
     expect(result.closeCode).toBe(4401);
     expect(result.helloOk).toBeUndefined();
   });
+
+  // Amendement 2026-09-25 (quater), Firefox side: a pinned uuid presenting a
+  // stale session token (from a previous broker process, now gone) is not
+  // locked out — same treatment as a known chrome-extension origin above.
+  test("a pinned Firefox uuid with a stale session token gets a FRESH session token (silent-renew)", async () => {
+    const server = boot();
+    const first = await connect(server, `moz-extension://${FIREFOX_UUID}`, SECRET);
+    expect(first.helloOk).toBeDefined();
+
+    const stale = "0".repeat(64); // well-formed shape, but never issued
+    const result = await connect(server, `moz-extension://${FIREFOX_UUID}`, stale);
+    expect(result.helloOk).toBeDefined();
+    expect(result.helloOk?.token).toMatch(SESSION_TOKEN_RE);
+    expect(result.helloOk?.token).not.toBe(stale);
+  });
+
+  // Companion to the above: once the uuid is REVOKED (unpinned again), its
+  // old — previously valid — session token must no longer work. Unlike the
+  // stale-token case, this origin is no longer "known" at all (back to
+  // firefox-provisional), so PROTOCOL's decision table says refus, not
+  // silent-renew.
+  test("a revoked Firefox uuid presenting its old session token is refused", async () => {
+    const dataDir = makeTmpDir("wingpen-silent-pair-");
+    const server = startServer({ port: 0, allowedExtensionIds: [ALLOWED_ID] }, SECRET, { dataDir });
+    servers.push(server);
+
+    const first = await connect(server, `moz-extension://${FIREFOX_UUID}`, SECRET);
+    const oldToken = first.helloOk?.token;
+    expect(oldToken).toMatch(SESSION_TOKEN_RE);
+
+    // Revoke: remove the pin by hand (same mechanism as
+    // firefox-pairing.test.ts's L1 test — truncate the pins file to empty).
+    writeFileSync(join(dataDir, "firefox-extension-uuids.txt"), "", { mode: 0o600 });
+
+    const result = await connect(server, `moz-extension://${FIREFOX_UUID}`, oldToken);
+    expect(result.closeCode).toBe(4401);
+    expect(result.helloOk).toBeUndefined();
+  });
 });
 
 // L2 (lot7 security review): open() must fail closed — a failure to even
@@ -250,7 +302,7 @@ describe("L2 — open() fails closed when evaluating the origin throws", () => {
     // A NUL byte makes every node:fs call on a path built from this dataDir
     // throw synchronously (ERR_INVALID_ARG_VALUE) — a reliable, dependency-free
     // way to force config.ts's ensureDir0700()/loadFirefoxPins() to throw.
-    const dataDir = mkdtempSync(join(tmpdir(), "wingpen-l2-open-")) + "\0bad";
+    const dataDir = makeTmpDir("wingpen-l2-open-") + "\0bad";
     const server = startServer({ port: 0, allowedExtensionIds: [ALLOWED_ID] }, "0123456789abcdef0123456789abcdef", { dataDir });
     servers.push(server);
 

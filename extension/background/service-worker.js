@@ -305,9 +305,15 @@ async function connectIfNeeded() {
     // hello-ok) so a broker that keeps refusing never loops silently.
     if (event.code === 4401 && wsState === "handshaking" && pairingToken && !retriedWithoutSecretThisCycle) {
       retriedWithoutSecretThisCycle = true;
-      api.storage.session.remove("pairingToken").catch(() => {});
       setState("disconnected");
-      connectIfNeeded();
+      // Wait for the removal before reconnecting: connectIfNeeded() re-reads
+      // storage.session, and an un-awaited remove() let it read the SAME stale
+      // token and loop on refusals (broker journal, 2026-09-25 08:48 — several
+      // refusals per second after a broker restart).
+      api.storage.session
+        .remove("pairingToken")
+        .catch(() => {})
+        .finally(() => connectIfNeeded());
       return;
     }
 

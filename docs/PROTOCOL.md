@@ -211,8 +211,8 @@ amendement 2026-09-25 : le texte disait « raison en clair », ce qui contredisa
 
    | Origine (étape 1) | `hello` sans `secret` | secret permanent valide | jeton de session valide | autre valeur |
    |---|---|---|---|---|
-   | autorisée (`chrome-extension://`) | octroi silencieux | octroi | octroi | refus |
-   | épinglée (`moz-extension://`) | octroi silencieux | octroi | octroi | refus |
+   | autorisée (`chrome-extension://`) | octroi silencieux | octroi | octroi | octroi **silent-renew** (jeton frais) |
+   | épinglée (`moz-extension://`) | octroi silencieux | octroi | octroi | octroi **silent-renew** (jeton frais) |
    | provisoire (`moz-extension://`) | refus | octroi **et épinglage** | refus | refus |
 
    Un jeton de session n'est valide que s'il a été délivré **à la même origine** et que cette
@@ -226,7 +226,10 @@ amendement 2026-09-25 : le texte disait « raison en clair », ce qui contredisa
   permanent) ; c'est ce que ce document promettait déjà, le code renvoyait le secret permanent
   (audit, écart n°1) ;
 - le **même** jeton si le `hello` présentait un jeton de session valide (pas de rotation à chaque
-  reconnexion).
+  reconnexion) ;
+- jeton de session **frais** (`via=silent-renew`) si l'origine est autorisée ou épinglée et que le
+  `hello` présentait une autre valeur qu'un jeton de session valide (jeton périmé, faux, ou secret
+  invalide) — voir « Appairage silencieux », amendement quater.
 
 **Jeton de session.** 256 bits d'un générateur cryptographique (`randomBytes(32)`), 64 caractères
 hexadécimaux — la longueur le distingue du secret permanent. Tenu **en mémoire seulement** par le
@@ -319,6 +322,16 @@ n'y a jamais de moment où le broker pourrait le reconnaître d'avance ») tombe
   sur `hello-ok`. S'il échoue aussi, l'état devient `"no-token"` et la reconnexion reprend son
   rythme habituel (backoff, alarme de 30 s). C'est ce qui rattrape un redémarrage du broker (jetons
   de session perdus) sans boucle infinie ni geste de l'utilisateur (audit §2, « Token rotation »).
+  L'effacement est **attendu** avant le nouvel essai : sans cela, l'extension relisait le jeton
+  périmé et enchaînait les refus (journal du broker, 25/09 à 8 h 48).
+- **Amendement 2026-09-25 (quater) — côté broker, un jeton périmé ne ferme plus la porte à une
+  origine connue.** Une origine éligible à l'appairage silencieux (ID Chromium autorisé, uuid
+  Firefox épinglé) qui présente un `secret` invalide (jeton de session perdu au redémarrage du
+  broker, ou valeur fausse) reçoit un **jeton de session frais**, comme si elle n'avait rien
+  envoyé. Refuser n'apportait aucune protection, puisque la même origine obtient un jeton sans
+  secret. En revanche, cela forçait Romain à recoller le secret après chaque redémarrage du
+  broker (25/09). Seule une origine **non encore approuvée** (uuid Firefox provisoire) voit encore
+  un `secret` faux refusé. Le journal note `grant via=silent-renew`.
 - Refus sans `secret` envoyé : état `"no-token"`, comme avant.
 - **Collage (options, Firefox).** Le champ est en écriture seule : jamais pré-rempli avec le jeton
   en mémoire. Coller une valeur non vide la range dans `pairingToken` et déclenche une reconnexion
@@ -1145,6 +1158,29 @@ décrits dans « Transport ».
 **Jamais** le secret permanent, un jeton de session ni la clé API — ni entiers, ni tronqués, ni
 leur empreinte. Les valeurs venues du client (`Host`, `Origin`) sont journalisées assainies :
 caractères de contrôle remplacés par `?`, coupées à 200 caractères.
+
+**Amendement 2026-09-26 — `error.message` et `reason=` du journal.** Constat du 25/09 : le
+provider `claude-cli` a répondu `model-unavailable` à deux reprises, sous-processus terminé en
+code 1 en ~1,2 s, sans que la cause reste identifiable — le CLI écrit sa propre explication sur
+`stdout` (un message `result` du SDK, avec `is_error: true`), jamais sur `stderr`, et jusqu'ici rien
+ne la lisait. `broker/src/providers/claude-cli.ts` capture désormais ce texte (à défaut, la fin du
+`stderr` accumulé), l'assainit (caractères de contrôle retirés, espaces réduits, coupé à ~300
+caractères) et :
+- l'ajoute au `message` de l'erreur envoyée au client (`{ "type": "error", "code":
+  "model-unavailable", "message": "Claude Code process exited with code 1: Internal crash:
+  unexpected token in config" }`) — un texte qui, lui, correspondrait à une session non
+  authentifiée (« Not logged in », « Please run /login », etc.) est classé `auth-required` avant
+  d'atteindre cette étape, inchangé depuis l'amendement 2026-09-21 (2) ;
+- l'ajoute à la ligne `request completed` du journal, sous la forme `reason="…"` :
+  `wingpen-broker: request completed id=… outcome=error:model-unavailable elapsedMs=… reason="…"`.
+
+**Contrat `error.message` pour `model-unavailable` et `internal`.** Pour ces deux codes,
+`message` porte (et a toujours porté — voir par ex. `ModelUnavailableError`, ou le texte brut d'une
+`fetch failed`) le détail technique, **en anglais**, destiné au journal et à une ligne secondaire
+dans le panneau — jamais le texte principal affiché à l'utilisateur. Le panneau choisit son libellé
+français d'après `code` seul, pas d'après `message`. **Ne s'applique pas à `auth-required`** : son
+`message` reste le texte français figé (`AUTH_REQUIRED_MESSAGE` ci-dessus), affichable tel quel —
+contrat inchangé par cet amendement.
 
 ## Règles invariantes
 

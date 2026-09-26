@@ -5,9 +5,9 @@
 // coverage of the same feature.
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, readFileSync, existsSync, chmodSync } from "node:fs";
 import { join } from "node:path";
+import { makeTmpDir } from "./helpers/tmp-dir.ts";
 import {
   parseFirefoxPinsFile,
   serializeFirefoxPinsFile,
@@ -19,7 +19,7 @@ import {
 } from "../src/config.ts";
 
 function tmpDataDir(): string {
-  return mkdtempSync(join(tmpdir(), "wingpen-fx-pins-"));
+  return makeTmpDir("wingpen-fx-pins-");
 }
 
 describe("parseFirefoxPinsFile", () => {

@@ -276,11 +276,6 @@ interface ConnData {
   authed: boolean;
   active: Map<string, AbortController>;
   helloTimer: ReturnType<typeof setTimeout> | null;
-  // evaluateOrigin()'s verdict for this connection's Origin header, recorded
-  // at `open()` so handleHandshakeMessage can tell a known origin (chrome or
-  // pinned Firefox — both auto-grant eligible, see "Appairage silencieux" in
-  // docs/PROTOCOL.md) apart from a not-yet-pinned Firefox one.
-  originKind: OriginDecision["kind"] | null;
 }
 
 function send(ws: { send(data: string): unknown }, msg: ServerMessage): void {
@@ -523,6 +518,58 @@ interface SettingsCtx {
   getProviderStatus(): ReturnType<ProviderStatusCache["get"]>;
 }
 
+/** Shared preamble for the three streaming request types (chat/summarize/act):
+ * log receipt, reject an oversized payload, reject a full concurrency cap,
+ * then hand off to buildPrompt/runStream. Each case only supplies what makes
+ * it different — the log fields, which text (if any) to size-check, which
+ * context (if any) to budget-check, and how to build its prompt. */
+function handleStreamingRequest(
+  ws: { send(data: string): unknown },
+  message: { id: string },
+  active: Map<string, AbortController>,
+  settingsCtx: SettingsCtx,
+  opts: {
+    logType: string;
+    logContextKind: string | undefined;
+    logTextLength: number;
+    logPageKind: string | undefined;
+    logFactsCount: number;
+    logItemsCount: number;
+    tooLargeText?: string;
+    budgetContext?: Context;
+    build: () => BuiltPrompt;
+  },
+): void {
+  const startedAt = Date.now();
+  logRequestReceived(
+    opts.logType,
+    message.id,
+    opts.logContextKind,
+    opts.logTextLength,
+    opts.logPageKind,
+    opts.logFactsCount,
+    opts.logItemsCount,
+  );
+  if (opts.tooLargeText !== undefined && contextTooLarge(opts.tooLargeText)) {
+    send(ws, { type: "error", id: message.id, code: "context-too-large", message: "text exceeds 40000 characters" });
+    logRequestCompleted(message.id, "error:context-too-large", Date.now() - startedAt);
+    return;
+  }
+  const budgetError = contextBudgetError(opts.budgetContext);
+  if (budgetError) {
+    send(ws, { type: "error", id: message.id, code: "context-too-large", message: budgetError });
+    logRequestCompleted(message.id, "error:context-too-large", Date.now() - startedAt);
+    return;
+  }
+  if (active.size >= MAX_CONCURRENT_STREAMS) {
+    send(ws, { type: "error", id: message.id, code: "bad-request", message: `too many concurrent requests (max ${MAX_CONCURRENT_STREAMS} per connection)` });
+    logRequestCompleted(message.id, "error:bad-request", Date.now() - startedAt);
+    return;
+  }
+  const built = opts.build();
+  void runStream(ws, active, message.id, built, settingsCtx.provider, settingsCtx.providerOpts, startedAt);
+}
+
 function handleMessage(
   ws: { send(data: string): unknown },
   message: ClientMessage,
@@ -535,83 +582,49 @@ function handleMessage(
       // Duplicate hello after an already-authed handshake: no-op.
       return;
     case "chat": {
-      const startedAt = Date.now();
-      const textLength = message.text.length + (message.context?.text?.length ?? 0);
-      logRequestReceived(
-        "chat",
-        message.id,
-        message.context?.kind,
-        textLength,
-        message.context?.pageKind,
-        message.context?.facts?.length ?? 0,
-        message.context?.items?.length ?? 0,
-      );
-      if (contextTooLarge(message.text)) {
-        send(ws, { type: "error", id: message.id, code: "context-too-large", message: "text exceeds 40000 characters" });
-        logRequestCompleted(message.id, "error:context-too-large", Date.now() - startedAt);
-        return;
-      }
-      const chatBudgetError = contextBudgetError(message.context);
-      if (chatBudgetError) {
-        send(ws, { type: "error", id: message.id, code: "context-too-large", message: chatBudgetError });
-        logRequestCompleted(message.id, "error:context-too-large", Date.now() - startedAt);
-        return;
-      }
-      if (active.size >= MAX_CONCURRENT_STREAMS) {
-        send(ws, { type: "error", id: message.id, code: "bad-request", message: `too many concurrent requests (max ${MAX_CONCURRENT_STREAMS} per connection)` });
-        logRequestCompleted(message.id, "error:bad-request", Date.now() - startedAt);
-        return;
-      }
-      const built = buildPrompt({ kind: "chat", text: message.text, context: message.context });
-      void runStream(ws, active, message.id, built, settingsCtx.provider, settingsCtx.providerOpts, startedAt);
+      handleStreamingRequest(ws, message, active, settingsCtx, {
+        logType: "chat",
+        logContextKind: message.context?.kind,
+        logTextLength: message.text.length + (message.context?.text?.length ?? 0),
+        logPageKind: message.context?.pageKind,
+        logFactsCount: message.context?.facts?.length ?? 0,
+        logItemsCount: message.context?.items?.length ?? 0,
+        tooLargeText: message.text,
+        budgetContext: message.context,
+        build: () => buildPrompt({ kind: "chat", text: message.text, context: message.context }),
+      });
       return;
     }
     case "summarize": {
-      const startedAt = Date.now();
-      logRequestReceived(
-        "summarize",
-        message.id,
-        message.context.kind,
-        message.context.text?.length ?? 0,
-        message.context.pageKind,
-        message.context.facts?.length ?? 0,
-        message.context.items?.length ?? 0,
-      );
-      const summarizeBudgetError = contextBudgetError(message.context);
-      if (summarizeBudgetError) {
-        send(ws, { type: "error", id: message.id, code: "context-too-large", message: summarizeBudgetError });
-        logRequestCompleted(message.id, "error:context-too-large", Date.now() - startedAt);
-        return;
-      }
-      if (active.size >= MAX_CONCURRENT_STREAMS) {
-        send(ws, { type: "error", id: message.id, code: "bad-request", message: `too many concurrent requests (max ${MAX_CONCURRENT_STREAMS} per connection)` });
-        logRequestCompleted(message.id, "error:bad-request", Date.now() - startedAt);
-        return;
-      }
-      const built = buildPrompt({ kind: "summarize", context: message.context, length: message.length });
-      void runStream(ws, active, message.id, built, settingsCtx.provider, settingsCtx.providerOpts, startedAt);
+      handleStreamingRequest(ws, message, active, settingsCtx, {
+        logType: "summarize",
+        logContextKind: message.context.kind,
+        logTextLength: message.context.text?.length ?? 0,
+        logPageKind: message.context.pageKind,
+        logFactsCount: message.context.facts?.length ?? 0,
+        logItemsCount: message.context.items?.length ?? 0,
+        budgetContext: message.context,
+        build: () => buildPrompt({ kind: "summarize", context: message.context }),
+      });
       return;
     }
     case "act": {
-      const startedAt = Date.now();
-      logRequestReceived("act", message.id, undefined, message.text.length);
-      if (contextTooLarge(message.text)) {
-        send(ws, { type: "error", id: message.id, code: "context-too-large", message: "text exceeds 40000 characters" });
-        logRequestCompleted(message.id, "error:context-too-large", Date.now() - startedAt);
-        return;
-      }
-      if (active.size >= MAX_CONCURRENT_STREAMS) {
-        send(ws, { type: "error", id: message.id, code: "bad-request", message: `too many concurrent requests (max ${MAX_CONCURRENT_STREAMS} per connection)` });
-        logRequestCompleted(message.id, "error:bad-request", Date.now() - startedAt);
-        return;
-      }
-      const built = buildPrompt({
-        kind: "act",
-        action: message.action,
-        text: message.text,
-        params: message.params,
+      handleStreamingRequest(ws, message, active, settingsCtx, {
+        logType: "act",
+        logContextKind: undefined,
+        logTextLength: message.text.length,
+        logPageKind: undefined,
+        logFactsCount: 0,
+        logItemsCount: 0,
+        tooLargeText: message.text,
+        build: () =>
+          buildPrompt({
+            kind: "act",
+            action: message.action,
+            text: message.text,
+            params: message.params,
+          }),
       });
-      void runStream(ws, active, message.id, built, settingsCtx.provider, settingsCtx.providerOpts, startedAt);
       return;
     }
     case "prompts.list": {
@@ -708,9 +721,9 @@ function handleHandshakeMessage(
     return;
   }
 
-  // L1 (lot7 security review): the decision recorded at open() (in
-  // ws.data.originKind) can go stale — a pin deleted by hand during the up
-  // to 3s window before this hello arrives must not still be honoured. Every
+  // L1 (lot7 security review): the decision made at open() can go stale — a
+  // pin deleted by hand during the up to 3s window before this hello arrives
+  // must not still be honoured. Every
   // hello re-reads the pin list and re-runs evaluateOrigin() fresh, rather
   // than trusting the value computed at open() — same fail-closed posture as
   // L2: any I/O error here (loadFirefoxPins can throw) is treated exactly
@@ -726,7 +739,6 @@ function handleHandshakeMessage(
     rejectHandshake(ws, origin, "origin no longer valid at hello time");
     return;
   }
-  ws.data.originKind = originKind;
 
   const knownKind = originKind === "chrome" || originKind === "firefox-known";
   // Non-null for both firefox-known and firefox-provisional origins — used
@@ -768,7 +780,7 @@ function handleHandshakeMessage(
       }
       ws.data.authed = true;
       console.error(`wingpen-broker: grant via=${via} origin=${sanitizeLogValue(origin)}`);
-      send(ws, { type: "hello-ok", v: 1, models: ["claude"], capabilities: ["chat", "summarize"], token });
+      send(ws, { type: "hello-ok", v: 1, token });
     } catch {
       rejectHandshake(ws, origin, "grant failed");
     }
@@ -1015,7 +1027,6 @@ export function startServer(config: WingpenConfig, pairingSecret: string, dirs: 
           authed: false,
           active: new Map(),
           helloTimer: null,
-          originKind: null,
         } satisfies ConnData,
       });
       if (!upgraded) {
@@ -1051,7 +1062,6 @@ export function startServer(config: WingpenConfig, pairingSecret: string, dirs: 
           rejectOrigin(ws, ws.data.origin);
           return;
         }
-        ws.data.originKind = decision.kind;
       },
       message(ws, raw) {
         const text = typeof raw === "string" ? raw : Buffer.from(raw).toString("utf8");

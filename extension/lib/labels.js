@@ -15,6 +15,21 @@ export const PROVIDER_LABELS = {
   ollama: "Ollama (local)",
 };
 
+// Connection-status labels — shared base for panel.js's renderStatusLabel()
+// and options.js's applyStatus() (KISS audit 2026-09-26, item 9: the two
+// were kept as separate copies). "no-token" differs slightly between the two
+// callers (panel adds "— voir réglages"), so it's the one entry callers may
+// override rather than being forced through here.
+export const CONNECTION_STATUS_LABELS = {
+  connected: "Connecté",
+  connecting: "Connexion…",
+  handshaking: "Connexion…",
+  "handshake-timeout": "Connexion…",
+  disconnected: "Déconnecté",
+  "no-token": "Pas de jeton",
+  unknown: "…",
+};
+
 /** @param {string} id @param {string} [fallback] - broker-sent label, used
  * only if this build doesn't know the id (forward compat). */
 export function providerLabel(id, fallback) {

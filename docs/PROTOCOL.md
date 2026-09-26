@@ -219,8 +219,9 @@ amendement 2026-09-25 : le texte disait « raison en clair », ce qui contredisa
    origine est encore autorisée ou épinglée au moment du `hello`. Un jeton de session n'épingle
    jamais rien.
 
-**Réponse — amendement 2026-09-25.** Tout octroi, quel qu'en soit le chemin, répond :
-`{"type":"hello-ok","v":1,"models":["claude"],"capabilities":["chat","summarize"],"token":"<jeton de session>"}`.
+**Réponse — amendement 2026-09-25 (`models`/`capabilities` retirés le 26/09 bis, voir annexe).**
+Tout octroi, quel qu'en soit le chemin, répond :
+`{"type":"hello-ok","v":1,"token":"<jeton de session>"}`.
 `token` est désormais **toujours présent** :
 - jeton de session **frais** si le `hello` n'en portait pas (sans `secret`, ou avec le secret
   permanent) ; c'est ce que ce document promettait déjà, le code renvoyait le secret permanent
@@ -265,10 +266,8 @@ l'avance ; il l'apprend :
 - **Révocation** : supprimer la ligne. **Rotation du secret permanent** : supprimer `pairing.txt`
   et redémarrer le broker (tous les jetons de session tombent avec le redémarrage ; les uuid
   épinglés restent épinglés).
-- **Migration.** Si `firefox-extension-uuids.txt` n'existe pas et que l'ancien
-  `firefox-extension-uuid.txt` (valeur unique) existe, le broker crée le nouveau fichier avec cet
-  uuid (`épinglé-le` = `vu-le` = date du démarrage), puis renomme l'ancien en
-  `firefox-extension-uuid.txt.migrated`. Il ne le supprime pas.
+- **Migration.** Retirée (voir amendement du 26/09 ci-dessous, item 6) : aucune installation
+  n'utilise plus l'ancien format `firefox-extension-uuid.txt` (valeur unique).
 
 **Ce que ça donne à l'usage (remplace « le colle une fois », audit écart n°6) :**
 - Chromium (ID autorisé) : aucun collage, jamais.
@@ -421,7 +420,8 @@ Tout message porte un `id` (chaîne, unique par requête, généré côté exten
 { "type": "chat", "id": "c1", "text": "...", "context": { /* voir Context */ } }
 
 // Résumé d'une page ou d'une vidéo. Le broker choisit la stratégie selon context.kind.
-{ "type": "summarize", "id": "c2", "context": { /* voir Context */ }, "length": "short" | "medium" }
+// `length` retiré le 26/09 (bis, voir annexe) : comportement fixé sur l'ancien "medium".
+{ "type": "summarize", "id": "c2", "context": { /* voir Context */ } }
 
 // Action sur la sélection de l'utilisateur. Déclenché depuis le menu
 // contextuel du navigateur (clic droit sur une sélection) : Reformuler →
@@ -462,7 +462,7 @@ Tout message porte un `id` (chaîne, unique par requête, généré côté exten
 
 ```jsonc
 {
-  "kind": "page" | "youtube" | "selection",
+  "kind": "page" | "youtube",
   "url": "https://…",   // origine + chemin UNIQUEMENT — jamais la query string ni le fragment
   "title": "…",
   "text": "…",          // texte principal déjà extrait et assaini par le content script
@@ -805,7 +805,7 @@ un champ absent :
 
 - `pageKind` absent, ou valeur hors des quatre prévues (un client plus récent pourrait en
   ajouter) → comportement `other` ;
-- `kind` différent de `page` (`youtube`, `selection`) → `pageKind`, `facts` et `items` ignorés ;
+- `kind` différent de `page` (`youtube`) → `pageKind`, `facts` et `items` ignorés ;
 - `facts` qui n'est pas un tableau, `items` qui n'est pas un tableau → champ ignoré ;
 - `facts` avec un `pageKind` autre que `listing`, `items` avec un `pageKind` autre que `list` →
   champ ignoré (ni rendu, ni compté dans le budget) ;
@@ -869,8 +869,8 @@ aucun préambule ni conclusion de politesse. **Aucun conseil d'expert, aucun jug
 fiscal ou financier** : ni « bonne affaire », ni « surévalué », ni « conforme », ni
 recommandation d'achat ou de location. Les chiffres sont ceux que la page affiche, attribués à
 elle ; **le modèle ne calcule aucun chiffre que la page ne montre pas** (pas de prix au m² refait,
-pas de moyenne présentée comme un fait de la page). Les bornes de longueur `short` / `medium`
-restent en vigueur.
+pas de moyenne présentée comme un fait de la page). `length` retiré le 26/09 (bis, voir annexe) :
+les bornes ci-dessous sont celles de l'ancien `medium`, désormais fixes.
 
 - **`list`** — le résumé d'une page de résultats, sur les `N` entrées lues :
   - la **fourchette de prix** parmi les entrées qui en affichent un (minimum, maximum), en disant
@@ -886,11 +886,11 @@ restent en vigueur.
 - **`listing`** — le résumé d'une fiche, en trois temps, dans cet ordre :
   1. **Les faits** : les caractéristiques affichées (prix, surface, prix au m², DPE, charges, taxe
      foncière… selon ce que la page montre), reprises telles quelles, les plus déterminantes
-     d'abord ; `short` en garde 6 au plus, `medium` 12 au plus.
+     d'abord ; 12 au plus.
   2. **Points à vérifier** : les questions qu'un lecteur attentif poserait, ou les documents qu'il
      demanderait, **à partir de ce que la page montre** (une incohérence entre deux faits, un fait
      que le texte contredit, un chiffre sans unité ou sans date) — formulés comme des questions à
-     poser, jamais comme un avis ; `short` 2 à 3, `medium` 4 à 6.
+     poser, jamais comme un avis ; 4 à 6.
   3. **Ce qu'en dit l'annonce** : le texte descriptif du vendeur ou de l'agence, résumé et
      **attribué** (« selon l'annonce… »), en dernier.
   - Ligne finale obligatoire, commençant par « Ce que l'annonce ne dit pas : », qui énumère les
@@ -1227,3 +1227,29 @@ Amendement 2026-09-25. Référence : `notes/audit_jeton_2026-09-25.md` §5.
 | 9 | Ré-appairage Firefox sans redémarrage promis | Le code change : liste relue à chaud ; texte : révocation = supprimer une ligne |
 | 10 | « Tout le reste répond 404 » | Texte corrigé : table des routes (400, 403, 405) ; le code ajoute 403 et 405 |
 | 11 | Message trop gros : `error` + fermeture promis | Le code change : `error` `oversized` puis fermeture 1009 après authentification |
+
+## 2026-09-26 (bis) — simplifications
+
+Suite à `notes/kiss_audit_2026-09-26.md`. Quatre éléments retirés du protocole, sans changement de
+comportement observable côté extension (le panneau n'utilisait déjà que la valeur qui reste) :
+
+1. **`summarize.length`** (`"short" | "medium"`) supprimé. Le panneau n'envoyait jamais `"short"` —
+   seul `"medium"` partait en pratique. Le comportement figé est celui d'aujourd'hui pour
+   `"medium"` (6 à 8 puces, 12 faits maximum, 4 à 6 points à vérifier). Un broker qui reçoit encore un
+   `summarize` avec un champ `length` l'ignore silencieusement (compatibilité : un champ en trop
+   n'est jamais une erreur).
+2. **`ContextKind` `"selection"`** supprimé — grep confirmé (26/09) : rien dans l'extension ne
+   construit jamais un `Context` avec ce `kind` (les `contexts: ["selection"]` de
+   `background/service-worker.js` sont l'API `chrome.contextMenus`, sans rapport). `ContextKind`
+   ne vaut plus que `"page" | "youtube"`.
+3. **`hello-ok.models` et `hello-ok.capabilities`** supprimés — valeurs figées
+   (`["claude"]`/`["chat","summarize"]`) que rien ne lisait ni côté extension ni dans les tests. Un
+   `hello-ok` ne porte plus que `type`, `v` et `token`.
+4. **Migration `firefox-extension-uuid.txt` (valeur unique)** retirée (item 6 de l'audit) — vérifié
+   le 26/09 : aucune installation existante ne porte plus ce fichier pré-25/09 (seuls
+   `chrome-profile/`, `firefox-extension-uuids.txt`, `pairing.txt`, `profile-*/` sont présents dans
+   `~/.local/share/wingpen`). Voir "Poignée de main" → "Cas Firefox" ci-dessus.
+
+Un broker mis à jour et une extension mise à jour partent toujours ensemble (même paquet) ; ces
+quatre champs disparaissent des deux côtés du même geste, il n'y a pas de fenêtre où l'un des deux
+seulement les connaît.

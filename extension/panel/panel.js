@@ -52,11 +52,11 @@
 //      matches it, with no further gesture needed.
 
 import { classifyPageType, classifyPageTypeFromMetadata } from "../content/detect.js";
-import { applyRetention } from "./retention.js";
+import { applyRetention, RETENTION_DAYS_KEY, parseStoredRetentionDays } from "./retention.js";
 import { api, IS_GECKO } from "../lib/browser-compat.js";
 import { parseTimestamps, getYouTubeVideoIdFromUrl } from "./timestamps.js";
 import { isNearBottom } from "./scroll.js";
-import { providerLabel, describeError, EXTRACTION_TIMEOUT_LABEL } from "../lib/labels.js";
+import { providerLabel, describeError, EXTRACTION_TIMEOUT_LABEL, CONNECTION_STATUS_LABELS } from "../lib/labels.js";
 import { withDeadline } from "../lib/deadline.js";
 
 // Must match extension/background/service-worker.js's BROKER_PORT — port is
@@ -68,8 +68,6 @@ const PAIR_URL = `http://127.0.0.1:${BROKER_PORT}/pair`;
 const STORAGE_KEY = "wingpen:conversation";
 const ATTACH_PAGE_KEY = "wingpen:attachPage";
 const PENDING_ACTION_KEY = "wingpen:pendingAction";
-const RETENTION_DAYS_KEY = "wingpen:retentionDays"; // number of days, or null for "jamais" — set from the options page
-const DEFAULT_RETENTION_DAYS = 30;
 const MAX_PERSISTED_MESSAGES = 200;
 
 // Client-side deadline for an in-flight request (deliverable B1). Set just
@@ -320,17 +318,6 @@ function onRuntimeMessage(message) {
     return;
   }
 
-  if (message.type === "wingpen:hello-ok") {
-    applyStatus("connected");
-    requestPrompts();
-    return;
-  }
-
-  if (message.type === "wingpen:closed") {
-    applyStatus("disconnected");
-    return;
-  }
-
   if (message.type === "wingpen:pending-action") {
     drainPendingAction();
     return;
@@ -470,15 +457,7 @@ function applyStatus(state) {
 }
 
 function renderStatusLabel() {
-  const labels = {
-    connected: "Connecté",
-    connecting: "Connexion…",
-    handshaking: "Connexion…",
-    "handshake-timeout": "Connexion…",
-    disconnected: "Déconnecté",
-    "no-token": "Pas de jeton — voir réglages",
-    unknown: "…",
-  };
+  const labels = { ...CONNECTION_STATUS_LABELS, "no-token": "Pas de jeton — voir réglages" };
   let text = labels[currentConnState] ?? currentConnState;
   if (currentConnState === "connected" && providerStatusSuffix) text += ` · ${providerStatusSuffix}`;
   els.statusLabel.textContent = text;
@@ -582,27 +561,13 @@ async function sendChat() {
     try {
       context = await extractFromTab(currentTabId);
     } catch (err) {
-      if (err instanceof NoAccessError) {
-        knownOrigin = err.origin;
-        showActivateAffordance(err.origin);
-        addMessage({
-          id: newId(),
-          role: "system",
-          text: "⚠ Wingpen n'a pas accès à cette page, la question n'a pas été envoyée. Cliquez sur « Activer Wingpen sur ce site » ci-dessus, ou décochez « Wingpen lit cette page » pour poser une question générale.",
-        });
-      } else if (looksLikeAccessDenied(err)) {
-        addMessage({
-          id: newId(),
-          role: "system",
-          text: "⚠ Wingpen n'a pas accès à cette page, la question n'a pas été envoyée. Cliquez sur l'icône Wingpen dans la barre d'outils pour l'autoriser sur cet onglet.",
-        });
-      } else {
-        addMessage({
-          id: newId(),
-          role: "system",
-          text: `⚠ Lecture de la page impossible, la question n'a pas été envoyée : ${err.message}`,
-        });
-      }
+      reportExtractionError(err, {
+        noAccess:
+          "⚠ Wingpen n'a pas accès à cette page, la question n'a pas été envoyée. Cliquez sur « Activer Wingpen sur ce site » ci-dessus, ou décochez « Wingpen lit cette page » pour poser une question générale.",
+        accessDenied:
+          "⚠ Wingpen n'a pas accès à cette page, la question n'a pas été envoyée. Cliquez sur l'icône Wingpen dans la barre d'outils pour l'autoriser sur cet onglet.",
+        other: (e) => `⚠ Lecture de la page impossible, la question n'a pas été envoyée : ${e.message}`,
+      });
       return;
     }
   }
@@ -618,10 +583,7 @@ async function sendChat() {
   persistConversation();
 
   pendingRetries.set(id, { type: "chat", text, context });
-  const ack = await api.runtime
-    .sendMessage({ type: "wingpen:client-message", payload: { type: "chat", id, text, context } })
-    .catch(() => null);
-  startRequestWatch(id, ack?.workerInstanceId ?? null);
+  await sendClientMessage({ type: "chat", id, text, context });
 }
 
 // Cancelling clears the in-flight state right away rather than waiting on the
@@ -768,10 +730,7 @@ async function retryRequest(msg) {
   setStreamingUi(true);
   persistConversation();
 
-  const ack = await api.runtime
-    .sendMessage({ type: "wingpen:client-message", payload: { ...payload, id: msg.id } })
-    .catch(() => null);
-  startRequestWatch(msg.id, ack?.workerInstanceId ?? null);
+  await sendClientMessage({ ...payload, id: msg.id });
 }
 
 function setStreamingUi(streaming) {
@@ -794,6 +753,15 @@ function setStreamingUi(streaming) {
 //   - a heartbeat that notices the service worker instance changed under us,
 //     which means it was killed by the MV3 lifecycle mid-request and nothing
 //     is coming for this id no matter how long we wait.
+
+/** Sends a `wingpen:client-message` request to the service worker and arms
+ * the request-watch deadline with whatever `workerInstanceId` comes back in
+ * the ack (or null if the send itself failed) — the shared tail of every
+ * place that kicks off a chat/summarize/act request or replays one. */
+async function sendClientMessage(payload) {
+  const ack = await api.runtime.sendMessage({ type: "wingpen:client-message", payload }).catch(() => null);
+  startRequestWatch(payload.id, ack?.workerInstanceId ?? null);
+}
 
 function startRequestWatch(id, workerInstanceId) {
   clearRequestWatch();
@@ -1004,30 +972,14 @@ async function summarize() {
   try {
     context = await extractFromTab(currentTabId);
   } catch (err) {
-    if (err instanceof NoAccessError) {
-      knownOrigin = err.origin;
-      showActivateAffordance(err.origin);
-      addMessage({
-        id: newId(),
-        role: "system",
-        text: "⚠ Wingpen n'a pas encore accès à cette page. Cliquez sur « Activer Wingpen sur ce site » ci-dessus.",
-      });
-    } else if (looksLikeAccessDenied(err)) {
-      // Access refused but the origin could not be mined from the message.
-      // Clicking the toolbar icon re-grants activeTab for the current tab.
-      addMessage({
-        id: newId(),
-        role: "system",
-        text: "⚠ Wingpen n'a pas accès à cette page. Cliquez sur l'icône Wingpen dans la barre d'outils pour l'autoriser sur cet onglet.",
-      });
-    } else {
-      addMessage({ id: newId(), role: "system", text: `⚠ Impossible de lire la page : ${err.message}` });
-    }
+    reportExtractionError(err, {
+      noAccess: "⚠ Wingpen n'a pas encore accès à cette page. Cliquez sur « Activer Wingpen sur ce site » ci-dessus.",
+      accessDenied: "⚠ Wingpen n'a pas accès à cette page. Cliquez sur l'icône Wingpen dans la barre d'outils pour l'autoriser sur cet onglet.",
+      other: (e) => `⚠ Impossible de lire la page : ${e.message}`,
+    });
     setStreamingUi(false);
     return;
   }
-
-  applyDetectedContext(context);
 
   // YouTube charge sa transcription en différé. On ouvre le panneau une fois —
   // exception nommée à la règle du geste — puis on relit. Sans transcription il
@@ -1083,11 +1035,8 @@ async function summarize() {
   setStreamingUi(true);
   persistConversation();
 
-  pendingRetries.set(id, { type: "summarize", context, length: "medium" });
-  const ack = await api.runtime
-    .sendMessage({ type: "wingpen:client-message", payload: { type: "summarize", id, context, length: "medium" } })
-    .catch(() => null);
-  startRequestWatch(id, ack?.workerInstanceId ?? null);
+  pendingRetries.set(id, { type: "summarize", context });
+  await sendClientMessage({ type: "summarize", id, context });
 }
 
 async function activeTabId() {
@@ -1110,6 +1059,25 @@ function extractOriginFromError(err) {
     return new URL(candidate).origin;
   } catch {
     return null;
+  }
+}
+
+/** Classifies a page-read failure (NoAccessError / a Chrome permission
+ * refusal / anything else) and reports it as a system message, with the
+ * phrasing appropriate to the caller (sendChat vs. summarize word things
+ * slightly differently). Shared side effect for NoAccessError: records
+ * `knownOrigin` and shows the "Activer Wingpen sur ce site" affordance.
+ * Callers still do their own cleanup (setStreamingUi, return) after calling
+ * this — that part isn't shared because it differs between callers. */
+function reportExtractionError(err, { noAccess, accessDenied, other }) {
+  if (err instanceof NoAccessError) {
+    knownOrigin = err.origin;
+    showActivateAffordance(err.origin);
+    addMessage({ id: newId(), role: "system", text: noAccess });
+  } else if (looksLikeAccessDenied(err)) {
+    addMessage({ id: newId(), role: "system", text: accessDenied });
+  } else {
+    addMessage({ id: newId(), role: "system", text: other(err) });
   }
 }
 
@@ -1216,10 +1184,7 @@ async function runAct(pending) {
   persistConversation();
 
   pendingRetries.set(id, { type: "act", action, text: selectionText, params });
-  const ack = await api.runtime
-    .sendMessage({ type: "wingpen:client-message", payload: { type: "act", id, action, text: selectionText, params } })
-    .catch(() => null);
-  startRequestWatch(id, ack?.workerInstanceId ?? null);
+  await sendClientMessage({ type: "act", id, action, text: selectionText, params });
 }
 
 function truncateForDisplay(text, max = 220) {
@@ -1428,10 +1393,7 @@ function escapeHtml(str) {
 async function loadConversation() {
   const data = await api.storage.local.get([STORAGE_KEY, ATTACH_PAGE_KEY, RETENTION_DAYS_KEY]);
   attachPagePreference = typeof data[ATTACH_PAGE_KEY] === "boolean" ? data[ATTACH_PAGE_KEY] : null;
-  const retentionDays =
-    data[RETENTION_DAYS_KEY] === null || typeof data[RETENTION_DAYS_KEY] === "number"
-      ? data[RETENTION_DAYS_KEY]
-      : DEFAULT_RETENTION_DAYS;
+  const retentionDays = parseStoredRetentionDays(data[RETENTION_DAYS_KEY]);
   const raw = Array.isArray(data[STORAGE_KEY]) ? data[STORAGE_KEY] : [];
   const filtered = applyRetention(raw, retentionDays);
   if (filtered.length !== raw.length || filtered.some((msg, i) => msg.ts !== raw[i]?.ts)) {

@@ -111,7 +111,6 @@ async function main(): Promise<void> {
               videoId: "probe0000000",
               text: FAKE_TRANSCRIPT,
             },
-            length: "short",
           }),
         );
         return;

@@ -152,3 +152,15 @@ et comparaison des transports : `etudes/appairage.md`.
 (crbug.com/421156866, « pas encore » appliqué aux WebSockets) est daté. Chrome 147 et Firefox 154
 filtrent désormais les WebSockets des sites web ; les origines d'extension restent hors de portée,
 sans garantie écrite. Le risque ouvert n°4 est précisé par T20. Détail : `etudes/appairage.md` §3.
+
+## Panneau et suggestions par site (26/09)
+
+Décidé par Romain le 26/09, après ses premiers essais du panneau.
+
+| # | Décision | Motif |
+|---|---|---|
+| P18 | **Pas de maquette** : le panneau reste minimal, fond blanc, thème sombre qui suit le système ; le design se règle dans le vrai panneau (police, tailles, espacements, une couleur d'accent), sur deux ou trois variantes en captures, et Romain choisit | Le panneau est volontairement dépouillé : l'essentiel du design tient aux proportions et aux polices, qu'une capture du vrai panneau montre mieux qu'une maquette. Remplace la méthode du 19/09 (maquette Penpot) et la palette chaude à une teinte du 25/09. |
+| T27 | **Suggestions par site dans un encart à place fixe** : indicateur d'attente au changement de page, puis l'icône du site et les prompts recommandés dessous ; jeu générique sur un site inconnu | Des boutons qui apparaissent et disparaissent sous la barre feraient sauter la mise en page à chaque changement d'onglet. |
+| T28 | **L'icône de l'encart est celle que le site fournit (favicon)**, jamais un logo embarqué | Vaut pour tous les sites, et l'extension ne transporte aucune marque d'autrui (examen du Chrome Web Store). |
+| T29 | **Pas de permission `tabs`** : sur un site non activé, l'encart montre le jeu générique et « Activer ce site » | `tabs` ferait afficher « Lire votre historique de navigation » à l'installation. Le panneau ne connaît l'adresse d'un onglet que sur un site activé ou après un clic (T5). |
+| T30 | **Suggestions par site : un fichier de données livré avec l'extension** (site → prompts), appelé à rejoindre les recettes | Du texte seulement, sans extraction propre au site : rien de ce que T14 et T15 encadrent pour une recette nommée. |

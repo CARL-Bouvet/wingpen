@@ -6,8 +6,9 @@
 
 import { describe, expect, test, afterEach, mock } from "bun:test";
 import { startServer } from "../src/server.ts";
-import { __setQueryImplForTests, __resetQueryImplForTests } from "../src/model.ts";
 import {
+  __setQueryImplForTests,
+  __resetQueryImplForTests,
   __setExecFileImplForTests,
   __resetExecFileImplForTests,
 } from "../src/providers/claude-cli.ts";

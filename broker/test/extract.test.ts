@@ -815,3 +815,52 @@ describe("extract.js — infobox Wikipédia (rappel « valeur chiffrée » : jam
     expect(result.items).toBeUndefined();
   });
 });
+
+// Ported from the now-deleted broker/test/detect.test.ts (item 1, KISS audit
+// 2026-09-26): detect.js's copy of hasNumericValue was unused in production
+// (extract.js's own copy is what actually runs), but these edge cases guard
+// the regex behind hasChiefNumericFact and were not otherwise covered here.
+describe("extract.js — hasNumericValue edge cases via facts (ported from detect.test.ts)", () => {
+  test("a real-estate abbreviation ('T3 - 65m² - 3 p.') is a chief numeric fact → listing", () => {
+    const factsList = new FakeElement("dl", {
+      children: [
+        new FakeElement("dt", { text: "Type" }),
+        new FakeElement("dd", { text: "T3 - 65m² - 3 p." }),
+        new FakeElement("dt", { text: "Ville" }),
+        new FakeElement("dd", { text: "Nantes" }),
+        new FakeElement("dt", { text: "DPE" }),
+        new FakeElement("dd", { text: "D" }),
+        new FakeElement("dt", { text: "Étage" }),
+        new FakeElement("dd", { text: "2e" }),
+      ],
+    });
+    const description = new FakeElement("div", {
+      text: "Bel appartement lumineux proche du centre-ville et des commerces. ".repeat(6),
+    });
+    const body = new FakeElement("body", { children: [factsList, description] });
+
+    const result = runExtract({ body });
+
+    expect(result.pageKind).toBe("listing");
+  });
+
+  test("bare-number-adjacent facts ('12 collections', '4.7 –0 Ma', a bibliography page range) never trigger listing", () => {
+    const factsList = new FakeElement("dl", {
+      children: [
+        new FakeElement("dt", { text: "Collections" }),
+        new FakeElement("dd", { text: "12 collections" }),
+        new FakeElement("dt", { text: "Âge" }),
+        new FakeElement("dd", { text: "4.7 –0 Ma" }),
+        new FakeElement("dt", { text: "Référence" }),
+        new FakeElement("dd", { text: "2013, p. 1–83" }),
+        new FakeElement("dt", { text: "Type" }),
+        new FakeElement("dd", { text: "Article" }),
+      ],
+    });
+    const body = new FakeElement("body", { children: [factsList] });
+
+    const result = runExtract({ body });
+
+    expect(result.pageKind).not.toBe("listing");
+  });
+});

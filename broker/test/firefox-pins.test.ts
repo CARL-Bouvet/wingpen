@@ -1,8 +1,8 @@
 // broker/src/config.ts's Firefox pin-list API — docs/PROTOCOL.md "Cas
-// Firefox" (amendement 2026-09-25): parse/serialize, the legacy single-uuid
-// migration, and recordFirefoxSeen's re-read-before-write + 16-entry LRU
-// eviction. See test/firefox-pairing.test.ts for the end-to-end (WebSocket)
-// coverage of the same feature.
+// Firefox" (amendement 2026-09-25): parse/serialize, and recordFirefoxSeen's
+// re-read-before-write + 16-entry LRU eviction. See
+// test/firefox-pairing.test.ts for the end-to-end (WebSocket) coverage of the
+// same feature.
 
 import { describe, expect, test } from "bun:test";
 import { writeFileSync, readFileSync, existsSync, chmodSync } from "node:fs";
@@ -72,7 +72,7 @@ describe("serializeFirefoxPinsFile", () => {
 });
 
 describe("loadFirefoxPins", () => {
-  test("returns [] when no pins file and no legacy file exist", () => {
+  test("returns [] when no pins file exists", () => {
     const dataDir = tmpDataDir();
     expect(loadFirefoxPins({ dataDir })).toEqual([]);
   });
@@ -90,48 +90,6 @@ describe("loadFirefoxPins", () => {
     recordFirefoxSeen({ dataDir }, "12345678-1234-1234-1234-123456789abc", "2026-09-25T14:03:00Z");
     const stat = require("node:fs").statSync(join(dataDir, FIREFOX_UUIDS_FILENAME));
     expect(stat.mode & 0o777).toBe(0o600);
-  });
-
-  test("migrates a legacy single-uuid file once, renaming it .migrated (never deleting it)", () => {
-    const dataDir = tmpDataDir();
-    writeFileSync(join(dataDir, "firefox-extension-uuid.txt"), "12345678-1234-1234-1234-123456789abc\n", { mode: 0o600 });
-
-    const pins = loadFirefoxPins({ dataDir });
-    expect(pins.length).toBe(1);
-    expect(pins[0].uuid).toBe("12345678-1234-1234-1234-123456789abc");
-    expect(pins[0].pinnedAt).toBe(pins[0].lastSeen);
-
-    expect(existsSync(join(dataDir, "firefox-extension-uuid.txt.migrated"))).toBe(true);
-    expect(existsSync(join(dataDir, "firefox-extension-uuid.txt"))).toBe(false);
-    expect(existsSync(join(dataDir, FIREFOX_UUIDS_FILENAME))).toBe(true);
-  });
-
-  // L4 (lot7 security review): a corrupted/hand-edited legacy file must not
-  // inject an arbitrary string into the new pin store (or the startup log).
-  test("an invalid legacy uuid is never migrated — no pins created, legacy file left untouched", () => {
-    const dataDir = tmpDataDir();
-    writeFileSync(join(dataDir, "firefox-extension-uuid.txt"), "not-a-uuid; rm -rf /\n", { mode: 0o600 });
-
-    const pins = loadFirefoxPins({ dataDir });
-    expect(pins).toEqual([]);
-    expect(existsSync(join(dataDir, "firefox-extension-uuid.txt"))).toBe(true);
-    expect(existsSync(join(dataDir, "firefox-extension-uuid.txt.migrated"))).toBe(false);
-    expect(existsSync(join(dataDir, FIREFOX_UUIDS_FILENAME))).toBe(false);
-  });
-
-  test("does not re-migrate once the new-format file exists", () => {
-    const dataDir = tmpDataDir();
-    writeFileSync(join(dataDir, "firefox-extension-uuid.txt"), "12345678-1234-1234-1234-123456789abc\n", { mode: 0o600 });
-    loadFirefoxPins({ dataDir }); // triggers migration
-
-    // Hand-edit the new file to something else entirely.
-    recordFirefoxSeen({ dataDir }, "87654321-4321-4321-4321-cba987654321", "2026-09-25T16:00:00Z");
-
-    const pins = loadFirefoxPins({ dataDir });
-    const uuids = pins.map((p) => p.uuid).sort();
-    expect(uuids).toEqual(
-      ["12345678-1234-1234-1234-123456789abc", "87654321-4321-4321-4321-cba987654321"].sort(),
-    );
   });
 
   test("a malformed line is dropped, not thrown on", () => {

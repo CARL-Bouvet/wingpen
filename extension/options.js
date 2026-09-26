@@ -4,10 +4,8 @@
 // the browser closes), never chrome.storage.local (unencrypted on disk).
 
 import { api, IS_GECKO } from "./lib/browser-compat.js";
-import { providerLabel, describeProviderUnavailable } from "./lib/labels.js";
-
-const RETENTION_DAYS_KEY = "wingpen:retentionDays"; // number of days, or null for "jamais"
-const DEFAULT_RETENTION_DAYS = 30;
+import { providerLabel, describeProviderUnavailable, CONNECTION_STATUS_LABELS } from "./lib/labels.js";
+import { RETENTION_DAYS_KEY, parseStoredRetentionDays } from "./panel/retention.js";
 
 // Fixed suggestions offered even when not yet granted (deliverable 4 —
 // "Sites où Wingpen se reconnaît tout seul"). Any origin already granted is
@@ -64,8 +62,7 @@ async function init() {
     : "Sans cette autorisation, Chrome cache à l'extension quel site est ouvert dans l'onglet, donc le bouton principal reste générique tant que vous n'avez pas cliqué dessus.";
 
   const data = await api.storage.local.get(RETENTION_DAYS_KEY);
-  const stored = data[RETENTION_DAYS_KEY];
-  const retentionDays = stored === null || typeof stored === "number" ? stored : DEFAULT_RETENTION_DAYS;
+  const retentionDays = parseStoredRetentionDays(data[RETENTION_DAYS_KEY]);
   els.retention.value = retentionDays === null ? "never" : String(retentionDays);
 
   els.save.addEventListener("click", () => applyToken(els.token.value.trim()));
@@ -80,12 +77,10 @@ async function init() {
   els.modelSelect.addEventListener("change", () => setProvider(undefined, els.modelSelect.value));
   els.modelSave.addEventListener("click", () => setProvider(undefined, els.modelInput.value.trim()));
   api.runtime.onMessage.addListener((message) => {
-    if (message?.type === "wingpen:status") applyStatus(message.state);
-    if (message?.type === "wingpen:hello-ok") {
-      applyStatus("connected");
-      requestSettings();
+    if (message?.type === "wingpen:status") {
+      applyStatus(message.state);
+      if (message.state === "connected") requestSettings();
     }
-    if (message?.type === "wingpen:closed") applyStatus("disconnected");
     if (message?.type === "wingpen:broker-message" && message.message?.type === "settings") {
       renderModelSection(message.message);
     }
@@ -128,16 +123,7 @@ async function saveRetention() {
 
 function applyStatus(state) {
   els.status.className = `status status--${state}`;
-  const labels = {
-    connected: "Connecté",
-    connecting: "Connexion…",
-    handshaking: "Connexion…",
-    "handshake-timeout": "Connexion…",
-    disconnected: "Déconnecté",
-    "no-token": "Pas de jeton",
-    unknown: "…",
-  };
-  els.statusLabel.textContent = labels[state] ?? state;
+  els.statusLabel.textContent = CONNECTION_STATUS_LABELS[state] ?? state;
 
   if (state !== "connected") {
     // Never show a stale provider/model choice while we can't confirm it

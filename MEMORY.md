@@ -23,9 +23,10 @@ Réinjecté chaque session : invariants seulement, ~30 lignes. L'état daté va 
 - Gratuit = acquisition, premium vertical pro = revenu, pas de tarif à vie. Un seul serveur, les licences, qui échoue en laissant passer. Encaissement par marchand de référence (Paddle / Lemon Squeezy), jamais Stripe nu.
 
 ## Méthode et identité
-- Le visuel se dessine à la main par Romain (Penpot ou Figma), puis Claude le reproduit. Graphiques : Plotly.js, jamais de SVG dessiné par le modèle.
+- Pas de maquette (P18) : panneau minimal, fond blanc, thème sombre système ; le design se règle dans le vrai panneau sur variantes en captures, Romain choisit. Graphiques : Plotly.js, jamais de SVG dessiné par le modèle.
+- Encart de site (T27-T30) : icône = favicon du site, jamais de logo embarqué ; pas de permission `tabs` ; suggestions par site dans un fichier de données livré avec l'extension.
 - Grill : ne demander que les vrais choix (préférence, coût, architecture, irréversible) ; une recommandation saine et réversible s'applique, annoncée en une ligne. Travail dense : plan écrit + ligne `/goal` prête à lancer.
-- Nom : **Coati** (le code dit encore Wingpen). Le champ « side » est saturé, n'y pas revenir. Palette chaude à une teinte, variante sombre obligatoire (`docs/design/palette.md`).
+- Nom : **Coati** (le code dit encore Wingpen). Le champ « side » est saturé, n'y pas revenir.
 
 ## Pièges qui mordent à chaque session (liste complète : `docs/PIEGES.md`)
 - Régression suspecte : comparer d'abord l'empreinte en bas du panneau à `bash scripts/stamp.sh`.

@@ -31,10 +31,25 @@ describe("parseClientMessage", () => {
       type: "summarize",
       id: "c2",
       context: { kind: "youtube", videoId: "abc" },
+    });
+    const result = parseClientMessage(raw);
+    expect(result.ok).toBe(true);
+  });
+
+  // `length` removed from the protocol (KISS audit 2026-09-26, item H): a
+  // client that still sends it is not an error — the field is just ignored.
+  test("a stray 'length' field on summarize is ignored, not rejected", () => {
+    const raw = JSON.stringify({
+      type: "summarize",
+      id: "c2b",
+      context: { kind: "youtube", videoId: "abc" },
       length: "short",
     });
     const result = parseClientMessage(raw);
     expect(result.ok).toBe(true);
+    if (result.ok && result.message.type === "summarize") {
+      expect((result.message as Record<string, unknown>).length).toBeUndefined();
+    }
   });
 
   test("parses a valid act message", () => {

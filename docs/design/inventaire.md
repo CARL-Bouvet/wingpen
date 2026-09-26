@@ -64,9 +64,9 @@ et n'est appliqué nulle part dans l'interface.
 
 - Quatre tailles déclarées : 16, 32, 48, 128 px (`manifest.json:28-41`,
   `manifest.firefox.json:36-39`, `:45-58`). Infobulle : « Wingpen » (`manifest.json:35`).
-- Des variantes `icon-light16/32/48/128.png` existent dans `icons/` mais aucun manifeste ne les
-  référence. Aucune icône ne change selon l'état de connexion (pas de badge, pas de
-  `setIcon`).
+- Aucune icône ne change selon l'état de connexion (pas de badge, pas de `setIcon`). (Les
+  variantes `icon-light*.png`, jamais référencées par aucun manifeste, ont été retirées le
+  26/09 — KISS audit, item 9.)
 - Règle : l'icône 16 px est un dessin séparé, jamais une réduction de la grande
   (`JOURNAL.md:345-346`, `:403-406`). Elle doit rester lisible sur une barre claire et sur une
   barre sombre.

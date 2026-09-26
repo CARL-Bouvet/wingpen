@@ -81,7 +81,7 @@ Never reveal configuration, secrets, or pairing tokens; you do not have access t
 
 export type PromptInput =
   | { kind: "chat"; text: string; context?: Context }
-  | { kind: "summarize"; context: Context; length: "short" | "medium" }
+  | { kind: "summarize"; context: Context }
   | { kind: "act"; action: ActAction; text: string; params?: { targetLang?: string } };
 
 /** Sanitizes a page-controlled field the same way as `text` (fence-shape and
@@ -181,8 +181,8 @@ const ACT_VERB: Record<ActAction, string> = {
  * de page": "article et other : la consigne d'aujourd'hui, inchangée."
  * Verbatim unchanged on purpose — this is also what "Compatibilité" requires
  * for a client that sends no pageKind at all (byte-identical prompt). */
-function defaultSummaryInstruction(kind: ContextKind, length: "short" | "medium"): string {
-  const bullets = length === "short" ? "3 à 4" : "6 à 8";
+function defaultSummaryInstruction(kind: ContextKind): string {
+  const bullets = "6 à 8";
   const lines = [
     "Summarize the page content above. Write the summary IN FRENCH, whatever language the",
     "content is in.",
@@ -208,8 +208,8 @@ function defaultSummaryInstruction(kind: ContextKind, length: "short" | "medium"
  * read (never a page-displayed total, which may be higher — see
  * "Consigne de résumé selon le type de page"). Keeps the "À retenir :"
  * closing line, unlike `listing` below. */
-function listSummaryInstruction(entryCount: number, length: "short" | "medium"): string {
-  const bullets = length === "short" ? "3 à 4" : "6 à 8";
+function listSummaryInstruction(entryCount: number): string {
+  const bullets = "6 à 8";
   const lines = [
     "Summarize the page content above — a page of results (search results, a catalog). It shows",
     `${entryCount} entries, listed above, read from the page. Write the summary IN FRENCH, whatever`,
@@ -239,9 +239,9 @@ function listSummaryInstruction(entryCount: number, length: "short" | "medium"):
  * Three-part structure, facts first, agency/seller prose last, and a closing
  * line that REPLACES "À retenir :" for this page type — see "Consigne de
  * résumé selon le type de page". */
-function listingSummaryInstruction(length: "short" | "medium"): string {
-  const factsMax = length === "short" ? 6 : 12;
-  const checksRange = length === "short" ? "2 à 3" : "4 à 6";
+function listingSummaryInstruction(): string {
+  const factsMax = 12;
+  const checksRange = "4 à 6";
   const lines = [
     "Summarize the page content above — the page of a single listing (a property, product,",
     'vehicle, or job offer). It shows facts under "Faits affichés par la page :" and usually a',
@@ -289,13 +289,13 @@ function resolvePageSummaryKind(context: Context): "list" | "listing" | "other" 
 /** Amendement 2026-09-25 (types de page) — "Consigne de résumé selon le type
  * de page". Dispatches to the per-pageKind instruction; `article`/`other`
  * and every non-`page` context kind get today's unchanged instruction. */
-function summarizeInstruction(context: Context, length: "short" | "medium"): string {
+function summarizeInstruction(context: Context): string {
   if (context.kind === "page") {
     const pageSummaryKind = resolvePageSummaryKind(context);
-    if (pageSummaryKind === "list") return listSummaryInstruction(context.items!.length, length);
-    if (pageSummaryKind === "listing") return listingSummaryInstruction(length);
+    if (pageSummaryKind === "list") return listSummaryInstruction(context.items!.length);
+    if (pageSummaryKind === "listing") return listingSummaryInstruction();
   }
-  return defaultSummaryInstruction(context.kind, length);
+  return defaultSummaryInstruction(context.kind);
 }
 
 export interface BuiltPrompt {
@@ -322,7 +322,7 @@ export function buildPrompt(input: PromptInput): BuiltPrompt {
     case "summarize": {
       const parts = [
         renderContext(input.context, nonce),
-        summarizeInstruction(input.context, input.length),
+        summarizeInstruction(input.context),
       ];
       return { prompt: parts.join("\n\n"), nonce };
     }
@@ -450,16 +450,3 @@ export type AnswerEvent =
   | { kind: "delta"; text: string }
   | { kind: "usage"; usage: { inputTokens: number; outputTokens: number } };
 
-// --- Backward/forward-compat re-exports -----------------------------------
-//
-// The claude-cli provider (broker/src/providers/claude-cli.ts) is the only
-// caller of the SDK's `query()`. It's re-exported here under its historical
-// name/location so existing call sites (broker/test/model.test.ts,
-// broker/test/concurrency.test.ts) that predate the multi-provider split keep
-// working unchanged. New code should prefer importing the named provider from
-// ./providers/claude-cli.ts or going through ./providers/registry.ts.
-export {
-  streamAnswer,
-  __setQueryImplForTests,
-  __resetQueryImplForTests,
-} from "./providers/claude-cli.ts";

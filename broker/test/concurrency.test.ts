@@ -5,7 +5,7 @@
 
 import { describe, expect, test, afterEach } from "bun:test";
 import { startServer, MAX_CONCURRENT_STREAMS } from "../src/server.ts";
-import { __setQueryImplForTests, __resetQueryImplForTests } from "../src/model.ts";
+import { __setQueryImplForTests, __resetQueryImplForTests } from "../src/providers/claude-cli.ts";
 import type { ServerMessage } from "../src/protocol.ts";
 import { makeTmpDir } from "./helpers/tmp-dir.ts";
 

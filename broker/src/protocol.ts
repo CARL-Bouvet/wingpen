@@ -1,7 +1,7 @@
 // TypeScript types and parser for every message defined in docs/PROTOCOL.md.
 // The 256 KB per-message cap is enforced here, at parse time.
 
-import type { ProviderId } from "./config.ts";
+import { isProviderId, type ProviderId } from "./config.ts";
 
 export const MAX_MESSAGE_BYTES = 256 * 1024;
 
@@ -14,7 +14,9 @@ export type ErrorCode =
   | "cancelled"
   | "internal";
 
-export type ContextKind = "page" | "youtube" | "selection";
+// "selection" removed (KISS audit 2026-09-26, item H): grep-confirmed nothing
+// in the extension ever built a Context with that kind.
+export type ContextKind = "page" | "youtube";
 
 // Amendement 2026-09-25 (types de page). Only meaningful when kind === "page"
 // — see docs/PROTOCOL.md "Types de page, faits et entrées". Anything outside
@@ -97,7 +99,6 @@ export interface SummarizeMessage {
   type: "summarize";
   id: string;
   context: Context;
-  length: "short" | "medium";
 }
 
 // "shorten" added for the panel's selection context menu (Raccourcir) —
@@ -220,8 +221,6 @@ export interface PromptsMessage {
 export interface HelloOkMessage {
   type: "hello-ok";
   v: 1;
-  models: string[];
-  capabilities: string[];
   // Amendement 2026-09-25: ALWAYS present on every grant, whatever the path —
   // a fresh session token (memory-only, invalid after a broker restart) if
   // the hello didn't already present a valid one, or the SAME session token
@@ -321,10 +320,6 @@ function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.length > 0;
 }
 
-function isProviderId(v: unknown): v is ProviderId {
-  return v === "claude-cli" || v === "ollama" || v === "claude-api";
-}
-
 // I3 (lot7 security review): bounds an apiKey before it's ever persisted or
 // used in an HTTP header. Printable ASCII (0x21-0x7e — excludes space and
 // every control character, including newlines), no upper bound the real key
@@ -379,7 +374,7 @@ function parseContext(v: unknown): Context | undefined {
   if (v === undefined) return undefined;
   if (!isRecord(v)) return undefined;
   const kind = v.kind;
-  if (kind !== "page" && kind !== "youtube" && kind !== "selection") return undefined;
+  if (kind !== "page" && kind !== "youtube") return undefined;
   const context: Context = { kind };
   if (typeof v.url === "string") context.url = v.url;
   if (typeof v.title === "string") context.title = v.title;
@@ -470,10 +465,10 @@ export function parseClientMessage(raw: string): ParseResult {
       if (!context) {
         return { ok: false, error: { code: "bad-request", message: "summarize: missing context", id } };
       }
-      if (parsed.length !== "short" && parsed.length !== "medium") {
-        return { ok: false, error: { code: "bad-request", message: "summarize: invalid length", id } };
-      }
-      return { ok: true, message: { type: "summarize", id, context, length: parsed.length } };
+      // `length` removed (KISS audit 2026-09-26, item H): the extension only
+      // ever sent "medium". A client that still sends it is not an error —
+      // the field is simply ignored, same as any other unknown extra field.
+      return { ok: true, message: { type: "summarize", id, context } };
     }
     case "act": {
       if (

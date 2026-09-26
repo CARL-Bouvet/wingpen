@@ -83,7 +83,7 @@ function ensureDir0700(dir: string): void {
   chmodSync(dir, 0o700);
 }
 
-function isProviderId(v: unknown): v is ProviderId {
+export function isProviderId(v: unknown): v is ProviderId {
   return v === "claude-cli" || v === "ollama" || v === "claude-api";
 }
 
@@ -184,16 +184,11 @@ export function loadOrCreatePairingSecret(dirs: Dirs): string {
 // evaluateOrigin and docs/PROTOCOL.md "Cas Firefox".
 
 export const FIREFOX_UUIDS_FILENAME = "firefox-extension-uuids.txt";
-// Pre-2026-09-25 format: a single bare uuid, no timestamps. Migrated once,
-// then renamed `.migrated` (never deleted — see docs/PROTOCOL.md).
-const LEGACY_FIREFOX_UUID_FILENAME = "firefox-extension-uuid.txt";
 
 export const FIREFOX_UUID_CAP = 16;
 
-// Exported (L4, lot7 security review) so the legacy single-uuid migration
-// below can validate what it reads off disk before writing it into the new
-// pin store and logging it — a hand-edited/corrupted legacy file must not
-// inject an arbitrary string into either.
+// Exported (L4, lot7 security review) so every uuid read off disk or over the
+// wire is validated before being written into the pin store or logged.
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface FirefoxPin {
@@ -236,32 +231,6 @@ function firefoxPinsPath(dirs: Pick<Dirs, "dataDir">): string {
   return join(dirs.dataDir, FIREFOX_UUIDS_FILENAME);
 }
 
-/** One-time migration from the legacy single-uuid file, called from
- * loadFirefoxPins when the new-format file doesn't exist yet. Renames the
- * legacy file to `<name>.migrated` (never deletes it). Returns the migrated
- * pin list, or null if there was nothing to migrate. */
-function migrateLegacyFirefoxUuid(dirs: Pick<Dirs, "dataDir">): FirefoxPin[] | null {
-  const legacyPath = join(dirs.dataDir, LEGACY_FIREFOX_UUID_FILENAME);
-  if (!existsSync(legacyPath)) return null;
-  const uuid = readFileSync(legacyPath, "utf8").trim().toLowerCase();
-  // L4 (lot7 security review): the legacy file was migrated and logged
-  // unconditionally — a corrupted or hand-edited file could inject an
-  // arbitrary string both into the new pin store and into this startup log
-  // line. Validate against the same UUID_RE every other uuid in this module
-  // goes through; an invalid legacy file is left untouched (not renamed —
-  // nothing was migrated) and produces no pins, same as "nothing to migrate".
-  if (!uuid || !UUID_RE.test(uuid)) return null;
-  const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-  const pins: FirefoxPin[] = [{ uuid, pinnedAt: now, lastSeen: now }];
-  writeFirefoxPinsAtomic(dirs, pins);
-  renameSync(legacyPath, `${legacyPath}.migrated`);
-  // `uuid` is safe to log as-is here: UUID_RE above already restricts it to
-  // `[0-9a-f-]`, so there is nothing left to sanitize (unlike the free-form
-  // lastSeen value logged by server.ts's evict line — see sanitizeLogValue).
-  console.log(`wingpen-broker: migrated legacy ${LEGACY_FIREFOX_UUID_FILENAME} (uuid=${uuid}) to ${FIREFOX_UUIDS_FILENAME}`);
-  return pins;
-}
-
 /** Reads the current Firefox pin list off disk — called at EVERY WebSocket
  * open (docs/PROTOCOL.md: "relu à chaud"), never cached, so a hand-edit takes
  * effect on the very next connection without a broker restart. */
@@ -269,7 +238,7 @@ export function loadFirefoxPins(dirs: Pick<Dirs, "dataDir">): FirefoxPin[] {
   ensureDir0700(dirs.dataDir);
   const path = firefoxPinsPath(dirs);
   if (!existsSync(path)) {
-    return migrateLegacyFirefoxUuid(dirs) ?? [];
+    return [];
   }
   chmodSync(path, 0o600);
   const { pins, malformedCount } = parseFirefoxPinsFile(readFileSync(path, "utf8"));

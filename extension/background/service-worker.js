@@ -293,7 +293,6 @@ async function connectIfNeeded() {
   ws.addEventListener("close", (event) => {
     clearTimeout(helloTimeoutId);
     ws = null;
-    broadcast({ type: "wingpen:closed", code: event.code, reason: event.reason });
 
     // docs/PROTOCOL.md "Jeton refusé": a 4401 during the handshake, after we
     // sent a `secret` (permanent secret or session token), means that secret
@@ -388,7 +387,6 @@ function handleBrokerMessage(raw) {
       api.storage.session.set({ pairingToken: message.token }).catch(() => {});
     }
     setState("connected");
-    broadcast({ type: "wingpen:hello-ok", models: message.models, capabilities: message.capabilities });
     flushPendingRequest();
     return;
   }
